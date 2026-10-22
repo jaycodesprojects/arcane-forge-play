@@ -1648,7 +1648,7 @@ small { font-size: var(--fs-xs); }
     { name: 'Common', color: '#9aa0a6' }, { name: 'Rare', color: '#3d7bff' }, { name: 'Epic', color: '#9c4dff' },
     { name: 'Legendary', color: '#ff8a1f' }, { name: 'Mythic', color: '#e04fd0' },
   ];
-  MF.spellReached = (s, id) => { const sp = MF.SPELL_BY_ID[id]; return !!sp && Math.max(s.stage.best || 0, s.stage.g || 0) >= sp.unlock; };
+  MF.spellReached = (s, id) => { const sp = MF.SPELL_BY_ID[id]; return !!sp && (!!(s.testUnlock && s.testUnlock.spells) || Math.max(s.stage.best || 0, s.stage.g || 0) >= sp.unlock); }; // Settings > Testing unlock (test-tools.js)
   /** Gold to learn a spell once it is reached: Commons are free, rarer ones cost many battles' worth of gold. */
   MF.SPELL_LEARN_KILLS = [0, 120, 250, 500, 1000];
   MF.spellLearnCost = (id) => { const sp = MF.SPELL_BY_ID[id]; return sp.r === 0 ? 0 : Math.round(MF.BAL.rewards.gold(sp.unlock) * MF.SPELL_LEARN_KILLS[sp.r] / 10) * 10; };
@@ -7994,8 +7994,11 @@ small { font-size: var(--fs-xs); }
     s.spells = Object.assign(Object.fromEntries(MF.SPELLS.map((sp) => [sp.id, 1])), data.spells || {});
     s.learned = data.learned || (data.spellSeen ? Object.assign({ cast: 1 }, data.spellSeen) : Object.fromEntries(MF.SPELLS.filter((sp) => MF.spellReached(s, sp.id)).map((sp) => [sp.id, 1]))); // spells you already had stay learned
     const oldBar = Array.isArray(data.bar) ? data.bar : ['cast', 'heal', 'burst'];
-    s.bar = oldBar.filter((id) => id && MF.SPELL_BY_ID[id] && MF.spellUnlocked(s, id)).slice(0, MF.BAR_SIZE);
-    while (s.bar.length < MF.BAR_SIZE) { const add = MF.SPELLS.find((sp) => !s.bar.includes(sp.id) && MF.spellUnlocked(s, sp.id)); s.bar.push(add ? add.id : null); }
+    // every saved slot keeps its place; an empty slot stays empty (no spell is ever equipped for you), a spell that's
+    // gone or not usable leaves its slot empty, and a spell is on the bar once
+    s.bar = Array.from({ length: MF.BAR_SIZE }, (_, i) => { const id = oldBar[i]; return id && MF.SPELL_BY_ID[id] && MF.spellUnlocked(s, id) && oldBar.indexOf(id) === i ? id : null; });
+    // a save from before a slot existed (3-slot bar): the new slot gets the next spell you know, once, as it always did
+    for (let i = oldBar.length; i < MF.BAR_SIZE; i++) { const add = MF.SPELLS.find((sp) => !s.bar.includes(sp.id) && MF.spellUnlocked(s, sp.id)); if (add) s.bar[i] = add.id; }
     // spells already unlocked in an older save are known quietly; only new unlocks get the fanfare
     s.spellSeen = data.spellSeen || Object.fromEntries(MF.SPELLS.filter((sp) => MF.spellReached(s, sp.id)).map((sp) => [sp.id, 1]));
     s.codex = Object.assign({ items: {}, dragons: {} }, data.codex || {});
@@ -13934,8 +13937,37 @@ small { font-size: var(--fs-xs); }
     },
   };
 
+  /** How far the companion's painted art reaches left / right of its centre (art px), over its whole animation: the
+      opaque mesh vertices (texel alpha > 0) skinned through a sampled cycle of every state (idle, trot, cheer, hop).
+      Measured once per companion from its own picture and rig, so the screen-edge limit fits each one exactly. */
+  const EXT = {};
+  function extent(key) {
+    if (EXT[key]) return EXT[key];
+    const rig = HC.rig(key), im = MF.Rig && MF.Rig.image('comp_' + key);
+    if (!rig || !im || !MF.Rig.loaded(im) || typeof document === 'undefined') return null;
+    const d = rig.def, cv = document.createElement('canvas'); cv.width = d.tex[0]; cv.height = d.tex[1];
+    const g = cv.getContext('2d'); g.drawImage(im, 0, 0);
+    let px; try { px = g.getImageData(0, 0, cv.width, cv.height).data; } catch (e) { return null; }
+    const solid = [];
+    for (let i = 0; i < rig.nv; i++) {
+      const u = Math.min(cv.width - 1, Math.max(0, Math.round(rig.uv[2 * i] * cv.width))), v = Math.min(cv.height - 1, Math.max(0, Math.round(rig.uv[2 * i + 1] * cv.height)));
+      if (px[(v * cv.width + u) * 4 + 3] > 24) solid.push(i);
+    }
+    const P = rig.pose(), name = HC.rigName(key);
+    let L = 0, R = 0, W = null;
+    for (let n = 0; n < 96; n++) for (const [w, ch, cel] of [[0, 0, 0], [1, 0, 0], [0, 1, 1]]) {
+      P.a.fill(0); P.tx.fill(0); P.ty.fill(0); P.sx.fill(1); P.sy.fill(1);
+      (POSE[name] || (() => {}))(rig, P, { t: n * 0.07, w, cel, ch, fly: false });
+      W = rig.solve(P, W);
+      rig.skin(W, 0, 0, 1, 1);
+      for (const i of solid) { const x = rig.out[2 * i] - 128; if (-x > L) L = -x; if (x > R) R = x; }
+    }
+    return (EXT[key] = { L, R });
+  }
+  const EDGE = 3; // internal px kept free between the companion's art and the screen edge
+
   const HC = (MF.HDComp = {
-    POSE,
+    POSE, extent,
     rigName: (key) => RIG[key] || key,
     rig: (key) => MF.Rig && MF.Rig.get('comp_' + HC.rigName(key)),
     ready(key) { const r = HC.rig(key), im = MF.Rig && MF.Rig.image('comp_' + key); return !!(r && im && MF.Rig.loaded(im)); },
@@ -13953,7 +13985,9 @@ small { font-size: var(--fs-xs); }
       (POSE[HC.rigName(cp.key)] || (() => {}))(rig, P, S);
       Q.W = rig.solve(P, Q.W);
       const lift = MF.SpellFX ? MF.SpellFX.lift(sc) : 0, gy = sc.ground;
-      const k = (H[cp.key] || 30) / 240, cx = sc.wx() - BACK;
+      // it keeps its spot behind the wizard, but never past the screen's left edge: when he steps back after a wave
+      // (stride.js) it stops where its whole painted body (wings, tails at full swing) is still on screen
+      const ext = extent(cp.key), k = (H[cp.key] || 30) / 240, cx = Math.max(sc.wx() - BACK, ext ? ext.L * k + EDGE : -1e9);
       const hover = fly && !still ? Math.sin(t * 2.2) * 2.5 + Math.sin(t * 3.7) * 0.8 : 0, hop = cel * 7;
       const bottom = fly ? gy - 16 - lift * 0.6 + hover - hop : gy - hop;
       const place = { x0: cx - 128 * k, y0: bottom - 248 * k, k };
@@ -13980,9 +14014,15 @@ small { font-size: var(--fs-xs); }
       if (MF.HDFX) {
         const begin = (sc, sx, sy) => { const x = sc.ctx; x.save(); x.setTransform(sc.dev, 0, 0, sc.dev, sx * sc.dev, sy * sc.dev); x.imageSmoothingEnabled = true; return x; };
         const behind = MF.HDFX.behind, front = MF.HDFX.front;
+        // normally behind the wizard; while he is stepped back from his spot (stride.js, between waves) the companion
+        // stands right at his back, so it is drawn in front of him there (they don't overlap where the order switches)
+        const comp = (sc, sx, sy) => { const x = begin(sc, sx, sy); try { HC.draw(sc, x); } finally { x.restore(); } };
         MF.HDFX.behind = function (sc, sx, sy) {
-          if (sc.hdComp) { const x = begin(sc, sx, sy); try { HC.draw(sc, x); } finally { x.restore(); } }
-          return behind.call(this, sc, sx, sy);
+          const ahead = sc.hdComp && (sc.wizOff || 0) < -0.5;
+          if (sc.hdComp && !ahead) comp(sc, sx, sy);
+          const r = behind.call(this, sc, sx, sy);
+          if (ahead) comp(sc, sx, sy);
+          return r;
         };
         MF.HDFX.front = function (sc, sx, sy) {
           front.call(this, sc, sx, sy);
@@ -16122,8 +16162,10 @@ small { font-size: var(--fs-xs); }
   const SP = (MF.SpellPreview = {
     SCRIPT,
     /** Starts the preview on canvas cv for spell id with save s. Returns false when it cannot (the caller keeps
-        the old pixel preview then). */
-    start(cv, id, s) {
+        the old pixel preview then). opts.lead: seconds before the spell fires in each loop (default LEAD; the
+        tap-to-preview sheet uses a short one so the spell shows straight away). */
+    start(cv, id, s, opts) {
+      const lead = opts && opts.lead != null ? opts.lead : LEAD;
       SP.stop();
       if (!MF.Scene || !SCRIPT[id] || !cv) return false;
       try {
@@ -16151,7 +16193,7 @@ small { font-size: var(--fs-xs); }
           const dt = Math.min(0.05, last ? (now - last) / 1000 : 0); last = now;
           loopT += dt;
           const evs = SCRIPT[id];
-          while (i < evs.length && loopT >= LEAD + evs[i][0]) {
+          while (i < evs.length && loopT >= lead + evs[i][0]) {
             const e = evs[i++][1];
             sc.handle({ ...e });
             if (e.type === 'heal') hp = HP;
@@ -16163,7 +16205,7 @@ small { font-size: var(--fs-xs); }
           raf = requestAnimationFrame(frame);
         };
         raf = requestAnimationFrame(frame);
-        live = { stop: () => cancelAnimationFrame(raf), sc };
+        live = { stop: () => { cancelAnimationFrame(raf); raf = 0; }, sc };
         return true;
       } catch (e) { console.warn('spell preview: falling back', e); SP.stop(); return false; }
     },
@@ -16450,7 +16492,7 @@ small { font-size: var(--fs-xs); }
       if (MF.sheets.isOpen() || document.querySelector('.tut') || (MF.chest && MF.chest.isPlaying())) break; // wait for a quiet moment
       s.spellSeen[sp.id] = 1;
       s.learned = s.learned || {};
-      if (sp.r === 0) { s.learned[sp.id] = 1; const empty = s.bar.indexOf(null); if (empty >= 0) { s.bar[empty] = sp.id; UI.buildSkills(); } }
+      if (sp.r === 0) s.learned[sp.id] = 1; // learned, not equipped: the player picks a slot (Spells > Equip)
       MF.sheets.spellUnlock(sp.id); // the pop-up with a live preview (and the Learn button for rarer spells)
       MF.app.save();
       break; // one at a time
@@ -17166,9 +17208,18 @@ small { font-size: var(--fs-xs); }
       <button class="btn" id="a-export" type="button">Copy save code</button>
       <button class="btn" id="a-import" type="button">Load save code</button>
       <button class="btn red" id="a-reset" type="button">Reset progress</button></div>
+      <div class="tt-sec" role="group" aria-label="Testing"><h3>Testing</h3>
+        <button class="btn" id="a-unlockall" type="button">Unlock all companions &amp; spells</button>
+        <button class="btn tt-tog ${MF.TestTools && MF.TestTools.biomeOn() ? 'on' : ''}" id="a-biome" type="button" aria-pressed="${!!(MF.TestTools && MF.TestTools.biomeOn())}">Enable biome switching: <b>${MF.TestTools && MF.TestTools.biomeOn() ? 'ON' : 'OFF'}</b></button>
+        <p class="note">Unlocking adds them to your collection only: nothing is equipped and your gold, gems and progress stay the same. Biome switching shows a yellow triangle on the battle screen: each tap shows the next biome (looks only).</p></div>
       <p class="note">Text uses your device's system font. Titles use Lilita One and Cinzel (SIL Open Font License 1.1).</p>`);
     el.querySelector('#a-shake').addEventListener('click', () => { MF.app.settings.shake = !MF.app.settings.shake; MF.app.saveSettings(); S.settings(); });
     el.querySelector('#a-test').addEventListener('click', () => S.testing());
+    el.querySelector('#a-unlockall').addEventListener('click', () => {
+      const r = MF.TestTools && MF.TestTools.unlockAll(); if (!r) return;
+      MF.ui.toast(r.comps || r.spells ? `Unlocked ${r.comps} companion${r.comps === 1 ? '' : 's'} and ${r.spells} spell${r.spells === 1 ? '' : 's'} · nothing equipped` : 'Everything is already unlocked');
+    });
+    el.querySelector('#a-biome').addEventListener('click', () => { if (MF.TestTools) MF.TestTools.setBiome(!MF.TestTools.biomeOn()); S.settings(); });
     el.querySelector('#a-sound').addEventListener('click', () => { MF.app.settings.sound = MF.app.settings.sound === false; MF.app.saveSettings(); S.settings(); });
     el.querySelector('#a-music').addEventListener('click', () => { MF.app.settings.music = MF.app.settings.music === false; MF.app.saveSettings(); if (MF.music) MF.music.sync(); S.settings(); });
     el.querySelector('#a-export').addEventListener('click', async () => {
@@ -17218,7 +17269,7 @@ small { font-size: var(--fs-xs); }
       <div class="su-name"><i class="ico2 ico-${sp.icon}"></i><b>${sp.name}</b><em class="sp-rar" style="--src:${R.color}">${R.name}</em></div>
       <p class="su-desc">${sp.desc}</p>
       <div class="cp-dbon"><span><em>Power</em><b>${powTxt}</b></span><span><em>Cooldown</em><b>${sp.cooldown}s</b></span></div>
-      <button class="btn ${needLearn && s.gold < cost ? 'off' : 'green'} cp-dgo" id="su-go" type="button"><b>${needLearn ? `Learn · <i class="ico ico-gold"></i>${U.fmt(cost)}` : s.bar.includes(id) ? 'On your bar · Fight!' : 'Put it on my bar'}</b></button>`,
+      <button class="btn ${needLearn && s.gold < cost ? 'off' : 'green'} cp-dgo" id="su-go" type="button"><b>${needLearn ? `Learn · <i class="ico ico-gold"></i>${U.fmt(cost)}` : s.bar.includes(id) ? 'On your bar · Fight!' : 'Equip: choose a slot'}</b></button>`,
       { center: true, round: true, cls: 'cp-sheet su-sheet', onClose: () => { cancelAnimationFrame(raf); if (MF.SpellPreview) MF.SpellPreview.stop(); } });
     const hd = !!(MF.SpellPreview && MF.SpellPreview.start(el.querySelector('.su-cv'), id, s));
     const cv = hd ? document.createElement('canvas') : el.querySelector('.su-cv'), c = cv.getContext('2d');
@@ -17311,8 +17362,11 @@ small { font-size: var(--fs-xs); }
         MF.ui.toast(`${sp.name} learned!`);
         if (MF.sfx) MF.sfx.chest(sp.r + 4, 120);
       }
-      if (!s.bar.includes(id)) { const i = s.bar.indexOf(null) >= 0 ? s.bar.indexOf(null) : s.bar.length - 1; s.bar[i] = id; MF.app.save(); MF.ui.buildSkills(); MF.ui.toast(`${sp.name} is on your bar`); }
+      MF.app.save();
+      // learning only adds it to your spells; Equip opens the slot choice (nothing on the bar changes until you pick one)
+      const learnedNow = needLearn;
       S.close();
+      if (MF.SpellUI && !s.bar.includes(id)) MF.SpellUI.open(id, { equip: !learnedNow });
     });
   };
 
@@ -17986,7 +18040,7 @@ small { font-size: var(--fs-xs); }
       const keepScroll = el.querySelector('.tab-scroll') ? el.querySelector('.tab-scroll').scrollTop : 0;
       el.dataset.sig = spSig;
       const ec = M.elementCounts(s);
-      const barHTML = `<div class="sp-bar"><span class="sp-bar-l">Spell bar</span>${s.bar.map((id, i) => `<button type="button" class="sp-slot${i === S.barSel ? ' sel' : ''}" data-bs="${i}">${id ? `<i class="ico2 ico-${MF.SPELL_BY_ID[id].icon}"></i><small>${MF.SPELL_BY_ID[id].label}</small>` : '<i class="lock-ico"></i><small>Empty</small>'}</button>`).join('')}<span class="sp-bar-h">Tap a slot, then “Use” on a spell</span></div>`;
+      const barHTML = `<div class="sp-bar"><span class="sp-bar-l">Spell bar</span>${s.bar.map((id, i) => `<button type="button" class="sp-slot" data-bs="${i}">${id ? `<i class="ico2 ico-${MF.SPELL_BY_ID[id].icon}"></i><small>${MF.SPELL_BY_ID[id].label}</small>` : '<i class="lock-ico"></i><small>Empty</small>'}</button>`).join('')}<span class="sp-bar-h">Tap a spell to preview it · Equip picks its slot</span></div>`;
       el.innerHTML = `<h3>Spells <small class="sp-gold"><i class="ico ico-gold"></i>${U.fmt(s.gold)}</small></h3>${barHTML}<div class="tab-scroll" style="display:flex;flex-direction:column;gap:8px">${MF.SPELLS.map((sp) => {
         const lvl = s.spells[sp.id];
         const cost = MF.spellCost(lvl);
@@ -17998,28 +18052,26 @@ small { font-size: var(--fs-xs); }
         const SR = MF.SPELL_RAR[sp.r];
         if (MF.spellReached(s, sp.id) && !MF.spellUnlocked(s, sp.id)) {
           const lc = MF.spellLearnCost(sp.id);
-          return `<div class="row sp-row sp-learn" style="--src:${SR.color}"><span class="spell-ico"><i class="ico2 ico-${sp.icon}"></i></span><span class="grow"><b>${sp.name} <em class="sp-rar">${SR.name}</em></b><span>${sp.desc}</span><span class="sp-unlock">Ready to learn</span></span><span class="sp-btns"><button class="btn sm ${s.gold >= lc ? 'gold' : 'off'}" data-learn="${sp.id}" type="button">Learn<br><i class="ico ico-gold"></i>${U.fmt(lc)}</button><button class="btn sm" data-prev="${sp.id}" type="button">Preview</button></span></div>`;
+          return `<div class="row sp-row sp-learn" style="--src:${SR.color}" data-sp="${sp.id}"><span class="spell-ico"><i class="ico2 ico-${sp.icon}"></i></span><span class="grow"><b>${sp.name} <em class="sp-rar">${SR.name}</em></b><span>${sp.desc}</span><span class="sp-unlock">Ready to learn</span></span><span class="sp-btns"><button class="btn sm ${s.gold >= lc ? 'gold' : 'off'}" data-learn="${sp.id}" type="button">Learn<br><i class="ico ico-gold"></i>${U.fmt(lc)}</button><button class="btn sm" data-prev="${sp.id}" type="button">Preview</button></span></div>`;
         }
         if (!MF.spellUnlocked(s, sp.id)) {
-          return `<div class="row sp-locked" style="--src:${SR.color}"><span class="spell-ico"><i class="ico2 ico-${sp.icon}"></i></span><span class="grow"><b>${sp.name} <em class="sp-rar">${SR.name}</em></b><span>${sp.desc}</span><span class="sp-unlock">Unlocks at battle ${MF.stageInfo(sp.unlock).label}</span></span><span class="sp-lock">🔒</span></div>`;
+          return `<div class="row sp-locked" style="--src:${SR.color}" data-sp="${sp.id}"><span class="spell-ico"><i class="ico2 ico-${sp.icon}"></i>${MF.SpellUI ? MF.SpellUI.LOCK : ''}</span><span class="grow"><b>${sp.name} <em class="sp-rar">${SR.name}</em></b><span>${sp.desc}</span><span class="sp-unlock">Unlocks at battle ${MF.stageInfo(sp.unlock).label}</span></span><span class="sp-btns"><button class="btn sm" data-prev="${sp.id}" type="button">Preview</button></span></div>`;
         }
         const affTxt = elem ? `<span class="sp-el" style="--ec:${elem.color}">${elem.name} gear: ${ec[elem.id] || 0} piece${(ec[elem.id] || 0) === 1 ? '' : 's'} · +${Math.round((ec[elem.id] || 0) * MF.EL_BONUS * 100)}%</span>` : '';
-        const useBtn = `<button class="btn sm ${onBar ? 'off' : ''} sp-use" data-use="${sp.id}" type="button">${onBar ? 'On bar' : 'Use'}</button>`;
-        return `<div class="row sp-row${onBar ? ' on-bar' : ''}" style="--src:${SR.color}"><span class="spell-ico"><i class="ico2 ico-${sp.icon}"></i></span><span class="grow"><b>${sp.name} · Lv.${lvl} <em class="sp-rar">${SR.name}</em></b>${affTxt}<span>${sp.desc}</span><span>${fmtP(now)}${lvl < MF.SPELL_MAX ? ` → ${fmtP(nextP)}` : ''} · ${sp.cooldown}s cooldown</span></span>
+        const useBtn = `<button class="btn sm ${onBar ? 'off' : 'gold'} sp-use" data-equip="${sp.id}" type="button">${onBar ? `Slot ${s.bar.indexOf(sp.id) + 1}` : 'Equip'}</button>`;
+        return `<div class="row sp-row${onBar ? ' on-bar' : ''}" style="--src:${SR.color}" data-sp="${sp.id}"><span class="spell-ico"><i class="ico2 ico-${sp.icon}"></i></span><span class="grow"><b>${sp.name} · Lv.${lvl} <em class="sp-rar">${SR.name}</em></b>${affTxt}<span>${sp.desc}</span><span>${fmtP(now)}${lvl < MF.SPELL_MAX ? ` → ${fmtP(nextP)}` : ''} · ${sp.cooldown}s cooldown</span></span>
           <span class="sp-btns">${useBtn}<button class="btn sm ${s.gold >= cost && lvl < MF.SPELL_MAX ? 'green' : 'off'}" data-up="${sp.id}" type="button">${lvl >= MF.SPELL_MAX ? 'Max' : `<i class="ico ico-gold"></i>${U.fmt(cost)}`}</button></span></div>`;
       }).join('')}</div>`;
       for (const b of el.querySelectorAll('[data-up]')) b.addEventListener('click', () => { if (G.upgradeSpell(game, b.dataset.up)) { MF.ui.toast('Spell upgraded'); MF.ui.refresh(); S.renderTab('spells'); } else MF.ui.toast('Not enough gold'); });
-      for (const b of el.querySelectorAll('[data-bs]')) b.addEventListener('click', () => { S.barSel = Number(b.dataset.bs); S.renderTab('spells'); });
-      for (const b of el.querySelectorAll('[data-learn], [data-prev]')) b.addEventListener('click', () => S.spellUnlock(b.dataset.learn || b.dataset.prev));
+      // a bar slot shows its spell; an empty one says how to fill it
+      for (const b of el.querySelectorAll('[data-bs]')) b.addEventListener('click', () => { const id = s.bar[Number(b.dataset.bs)]; if (id && MF.SpellUI) MF.SpellUI.open(id); else MF.ui.toast('Empty slot: tap Equip on a spell to put it here'); });
+      for (const b of el.querySelectorAll('[data-learn]')) b.addEventListener('click', (e) => { e.stopPropagation(); S.spellUnlock(b.dataset.learn); });
+      // tap a spell (or Preview) to watch it; Equip opens the slot choice; nothing changes until a slot is chosen
+      const sheet = (id, equip) => (MF.SpellUI ? MF.SpellUI.open(id, { equip }) : S.spellUnlock(id));
+      for (const b of el.querySelectorAll('[data-prev]')) b.addEventListener('click', (e) => { e.stopPropagation(); sheet(b.dataset.prev, false); });
+      for (const b of el.querySelectorAll('[data-equip]')) b.addEventListener('click', (e) => { e.stopPropagation(); sheet(b.dataset.equip, true); });
+      for (const r of el.querySelectorAll('[data-sp]')) r.addEventListener('click', (e) => { if (!e.target.closest('button')) sheet(r.dataset.sp, false); });
       { const sc = el.querySelector('.tab-scroll'); if (sc) sc.scrollTop = keepScroll; } // a rebuild keeps your place
-      for (const b of el.querySelectorAll('[data-use]')) b.addEventListener('click', () => {
-        const id = b.dataset.use;
-        if (s.bar.includes(id) || !MF.spellUnlocked(s, id)) return;
-        const old = s.bar[S.barSel];
-        s.bar[S.barSel] = id;
-        MF.app.save(); MF.ui.buildSkills(); MF.ui.refresh(); S.renderTab('spells');
-        MF.ui.toast(old ? `${MF.SPELL_BY_ID[id].name} replaces ${MF.SPELL_BY_ID[old].name}` : `${MF.SPELL_BY_ID[id].name} added to your bar`);
-      });
     } else if (tab === 'conclave') {
       if (!soft) MF.conclave.renderTab(el); // its own buttons re-render it; no ticking refresh (keeps the scroll)
     } else if (tab === 'codex') {
@@ -19940,6 +19992,291 @@ small { font-size: var(--fs-xs); }
   }
 
   MF.FullTabs = { sync, PAGES };
+})(typeof window !== 'undefined' ? window : globalThis);
+</script>
+<script>
+/* Arcane Forge: Magefall — spell presentation and the spell sheet (owner, Oct 2026).
+   - Icons: the painted spell art carries its own gold rim, so the extra circle around it (list rows, skill bar) is gone
+     and the art shows a little larger. Locked spells get the owner's padlock (art/ref/ui/locks.jpg, the skill-bar lock)
+     over a dimmed icon, in the skill bar's dark orb, instead of a 🔒 emoji.
+   - Tap a spell anywhere in Spells: a sheet plays that spell's real battle animation (spell-preview.js, a second
+     MF.Scene fed the same events the fight sends), starting in about a tenth of a second, with Replay. Previews never
+     touch the save, the fight or the bar; locked spells can be previewed too.
+   - Learning and equipping are separate: Learn only adds the spell to your collection. Equip is its own button and
+     asks which slot; an occupied slot needs a clear Replace, Cancel leaves the bar exactly as it was. A spell is never
+     on the bar twice (choosing a slot for a spell that is already on the bar moves it, swapping with what was there). */
+(function (root) {
+  'use strict';
+  const MF = (root.MF = root.MF || {});
+  const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+  function css() {
+    if (typeof document === 'undefined' || document.getElementById('spell-ui-css')) return;
+    const A = MF.HD_ART || {}, lock = A.ui_lock ? `url(${A.ui_lock})` : 'none';
+    const st = document.createElement('style'); st.id = 'spell-ui-css';
+    st.textContent = `
+/* the painted art's own gold rim is the frame: no ink circle, cream gap or rarity ring around it */
+.spell-ico.spell-ico.spell-ico{position:relative;width:44px;height:44px;border:0!important;border-radius:50%;background:transparent!important;box-shadow:none!important;filter:drop-shadow(0 1px 1.5px rgba(26,18,38,0.45))}
+.sp-locked .spell-ico.spell-ico.spell-ico{filter:none}
+/* the row fades its text, not its lock, so the lock keeps the skill bar's colours */
+.sp-locked.sp-locked{opacity:1;filter:none}
+.sp-locked > :not(.spell-ico){opacity:0.72;filter:saturate(0.6)}
+.sp-locked .spell-ico .ico2.ico2.ico2.ico2.ico2.ico2{filter:brightness(0.42) saturate(0.55)}
+.skill:not(.locked) .orb.orb.orb{border:0!important;box-shadow:0 1px 2px rgba(0,0,0,0.55)!important}
+.skill.ready:not(.locked) .orb.orb.orb{box-shadow:0 1px 2px rgba(0,0,0,0.55),0 0 9px 1px color-mix(in srgb,var(--rc,#ffe14a) 70%,transparent)!important}
+.skill.queued:not(.locked) .orb.orb.orb{box-shadow:0 0 0 2px #ffe08a,0 0 12px rgba(255,214,110,0.9)!important}
+.sp-slot .ico2{width:34px!important;height:34px!important}
+/* locked: the skill bar's lock (dark orb, lilac ring, the owner's padlock) laid over the dimmed art */
+.spv-lock{position:absolute;inset:0;border-radius:50%;pointer-events:none;background:radial-gradient(circle,rgba(42,42,67,0.8) 0 62%,rgba(38,38,61,0.86) 80%);box-shadow:inset 0 0 0 2.6px #48475e,inset 0 -1px 0 2.6px #3c3a52,inset 0 0 7px 3px rgba(8,6,16,0.5)}
+.spv-lock::after{content:'';position:absolute;left:22%;top:15%;width:56%;height:70%;background:${lock} center/contain no-repeat;filter:drop-shadow(0 1px 1px rgba(0,0,0,0.55))}
+.sp-row,.sp-locked,.sp-learn{cursor:pointer}
+.sp-row .grow,.sp-locked .grow,.sp-learn .grow{min-width:0}
+/* the spell sheet */
+.spv-sheet .su-stage{padding:0;overflow:hidden}
+.spv-sheet .su-cv{display:block;width:100%;max-width:none}
+.spv-replay{position:absolute;right:6px;bottom:6px;height:30px;padding:0 10px;display:inline-flex;align-items:center;gap:4px;font-family:var(--font-title);font-size:15px;letter-spacing:0.5px;color:#fff;background:rgba(20,14,40,0.72);border:1.5px solid rgba(255,224,138,0.8);border-radius:15px}
+.spv-replay:active{transform:translateY(1px)}
+.spv-name .ico2{width:40px;height:40px;flex:none}
+.spv-name b{font-size:clamp(21px,7vw,28px)!important}
+.spv-status{margin:0 2px 8px;font-size:var(--fs-xs);font-weight:var(--fw-x);color:#5a2db0}
+.spv-act{display:flex;flex-direction:column;gap:8px}
+.spv-act .btn.off{pointer-events:none}
+.spv-slots{display:flex;flex-direction:column;gap:8px;padding:8px;border:2px solid #2a1a3a;border-radius:var(--r);background:#2c2148;color:#fff}
+.spv-slots[hidden]{display:none}
+.spv-sh{font-size:var(--fs-s);font-weight:var(--fw-b);color:#e8dcff}
+.spv-sh b{color:#ffe08a}
+.spv-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+.spv-slot{display:flex;flex-direction:column;align-items:center;gap:2px;min-width:0;padding:6px 2px;border:2px solid #1a1226;border-radius:var(--r);background:#3d2768;color:#fff}
+.spv-slot .ico2,.spv-slot .lock-ico{width:36px;height:36px}
+.spv-slot small{max-width:100%;font-size:11px;font-weight:var(--fw-b);line-height:1.15;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.spv-slot em{font-style:normal;font-size:10px;color:#cdbdf0}
+.spv-slot.here{box-shadow:0 0 0 2px #f5c542,0 0 8px rgba(245,197,66,0.7)}
+.spv-slot.pick{box-shadow:0 0 0 2px #7fe0a0,0 0 10px rgba(127,224,160,0.8)}
+.spv-confirm{padding:8px;border-radius:var(--r);background:#fff3dc;color:#2a1a3a;font-size:var(--fs-s);line-height:1.35}
+.spv-confirm[hidden]{display:none}
+.spv-row{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px}
+.spv-row .btn{height:40px}
+`;
+    document.head.appendChild(st);
+  }
+
+  /** Lock overlay for a locked list icon (the markup is added by build.js on locked rows). */
+  const LOCK = '<i class="spv-lock" aria-hidden="true"></i>';
+
+  let cur = null; // the open sheet: { id, el }
+
+  const game = () => (MF.game && MF.game.current) || (MF.app && MF.app.game);
+  const powTxt = (s, id) => { const p = MF.battle.spellPower(s, id); return id === 'heal' ? `${Math.round(p * 100)}% HP` : MF.spellPowTxt ? MF.spellPowTxt(id, p) : `${Math.round(p * 100)}% ATK`; };
+
+  /** Puts spell id into bar slot i (the player's explicit choice). A spell already on the bar moves (swapping). */
+  function equip(s, id, i) {
+    const bar = s.bar, j = bar.indexOf(id), old = bar[i];
+    if (j === i) return null;
+    bar[i] = id;
+    if (j >= 0) bar[j] = old || null;
+    MF.app.save(); MF.ui.buildSkills(); MF.ui.refresh();
+    const t = document.getElementById('tab-spells'); if (t) { t.dataset.sig = ''; if (MF.ui.tab === 'spells') MF.sheets.renderTab('spells'); }
+    const sp = MF.SPELL_BY_ID[id];
+    return j >= 0 && old ? `${sp.name} moved to slot ${i + 1} · ${MF.SPELL_BY_ID[old].name} to slot ${j + 1}`
+      : j >= 0 ? `${sp.name} moved to slot ${i + 1}`
+      : old ? `${sp.name} replaces ${MF.SPELL_BY_ID[old].name} in slot ${i + 1}` : `${sp.name} equipped in slot ${i + 1}`;
+  }
+
+  function slotsHTML(s, id) {
+    const sp = MF.SPELL_BY_ID[id];
+    return `<div class="spv-sh">Choose a slot for <b>${esc(sp.name)}</b></div><div class="spv-grid">${s.bar.map((b, i) => {
+      const o = b && MF.SPELL_BY_ID[b];
+      return `<button type="button" class="spv-slot${b === id ? ' here' : ''}" data-slot="${i}" aria-label="Slot ${i + 1}: ${o ? esc(o.name) : 'empty'}">${o ? `<i class="ico2 ico-${o.icon}"></i><small>${esc(o.label || o.name)}</small>` : '<i class="lock-ico"></i><small>Empty</small>'}<em>Slot ${i + 1}</em></button>`;
+    }).join('')}</div><div class="spv-confirm" hidden></div><button class="btn" type="button" data-cancel="1">Cancel</button>`;
+  }
+
+  /** The buttons under the preview, for the spell's current state (re-drawn after Learn / Equip). */
+  function renderActions(el, s, id, showSlots) {
+    const sp = MF.SPELL_BY_ID[id], act = el.querySelector('.spv-act'), status = el.querySelector('.spv-status');
+    const reached = MF.spellReached(s, id), unlocked = MF.spellUnlocked(s, id), at = s.bar.indexOf(id);
+    if (!reached) {
+      status.textContent = `Locked · unlocks at battle ${MF.stageInfo(sp.unlock).label}`;
+      act.innerHTML = `<button class="btn off cp-dgo" type="button" disabled><b><i class="lock-ico"></i>Locked</b></button>`;
+      return;
+    }
+    if (!unlocked) {
+      const lc = MF.spellLearnCost(id);
+      status.textContent = 'Ready to learn · learning adds it to your spells (it is not equipped)';
+      act.innerHTML = `<button class="btn ${s.gold >= lc ? 'gold' : 'off'} cp-dgo" type="button" data-learn="1"><b>Learn · <i class="ico ico-gold"></i>${MF.util ? MF.util.fmt(lc) : lc}</b></button>`;
+      act.querySelector('[data-learn]').addEventListener('click', () => {
+        if (s.gold < lc) { MF.ui.toast(`Need ${MF.util ? MF.util.fmt(lc) : lc} gold to learn ${sp.name}`); return; }
+        s.gold -= lc; s.learned = s.learned || {}; s.learned[id] = 1;
+        if (MF.sfx) MF.sfx.chest(sp.r + 4, 120);
+        MF.app.save(); MF.ui.refresh();
+        const t = document.getElementById('tab-spells'); if (t) { t.dataset.sig = ''; if (MF.ui.tab === 'spells') MF.sheets.renderTab('spells'); }
+        MF.ui.toast(`${sp.name} learned! Equip it when you want it on your bar`);
+        renderActions(el, s, id, false);
+      });
+      return;
+    }
+    status.textContent = at >= 0 ? `Equipped · slot ${at + 1}` : 'In your spells · not equipped';
+    act.innerHTML = `<button class="btn ${at >= 0 ? '' : 'green'} cp-dgo" type="button" data-equip="1"><b>${at >= 0 ? 'Change slot' : 'Equip'}</b></button><div class="spv-slots" hidden></div>`;
+    const box = act.querySelector('.spv-slots'), eqBtn = act.querySelector('[data-equip]');
+    const showChooser = () => {
+      box.innerHTML = slotsHTML(s, id); box.hidden = false; eqBtn.hidden = true;
+      const conf = box.querySelector('.spv-confirm'), outer = box.querySelector('[data-cancel]');
+      outer.addEventListener('click', () => { box.hidden = true; eqBtn.hidden = false; }); // nothing changes
+      for (const b of box.querySelectorAll('[data-slot]')) b.addEventListener('click', () => {
+        const i = Number(b.dataset.slot), occ = s.bar[i];
+        for (const o of box.querySelectorAll('.spv-slot')) o.classList.toggle('pick', o === b);
+        if (occ === id) { conf.hidden = true; MF.ui.toast(`${sp.name} is already in slot ${i + 1}`); return; }
+        const done = () => { const msg = equip(s, id, i); if (msg) MF.ui.toast(msg); renderActions(el, s, id, false); };
+        if (!occ) { done(); return; }
+        const j = s.bar.indexOf(id), O = MF.SPELL_BY_ID[occ];
+        conf.innerHTML = (j >= 0
+          ? `Put <b>${esc(sp.name)}</b> in slot ${i + 1}? <b>${esc(O.name)}</b> moves to slot ${j + 1}.`
+          : `Replace <b>${esc(O.name)}</b> with <b>${esc(sp.name)}</b> in slot ${i + 1}? ${esc(O.name)} stays in your spells.`) +
+          `<div class="spv-row"><button class="btn green" type="button" data-yes="1"><b>${j >= 0 ? 'Swap' : 'Replace'}</b></button><button class="btn" type="button" data-no="1">Cancel</button></div>`;
+        conf.hidden = false; outer.hidden = true; // one Cancel at a time
+        conf.querySelector('[data-yes]').addEventListener('click', done);
+        conf.querySelector('[data-no]').addEventListener('click', () => { conf.hidden = true; outer.hidden = false; b.classList.remove('pick'); });
+      });
+    };
+    eqBtn.addEventListener('click', showChooser);
+    if (showSlots) showChooser();
+  }
+
+  const UI = (MF.SpellUI = {
+    LOCK,
+    /** Opens the spell sheet: live preview of spell id + Learn / Equip for its state. opts.equip opens the slot
+        chooser straight away (the Equip button in the list). Returns the sheet element. */
+    open(id, opts = {}) {
+      const g = game(), s = g && g.s, sp = MF.SPELL_BY_ID[id]; if (!s || !sp) return null;
+      css();
+      const R = MF.SPELL_RAR[sp.r];
+      const el = MF.sheets.open(`${MF.sheets.head(esc(sp.name.toUpperCase()), `${R.name} spell`)}
+        <div class="su-stage" style="--src:${R.color}"><canvas class="su-cv" width="320" height="160" aria-label="${esc(sp.name)} preview"></canvas><span class="su-tag">PREVIEW</span><button class="spv-replay" type="button" aria-label="Replay the preview">↻ Replay</button></div>
+        <div class="su-name spv-name"><i class="ico2 ico-${sp.icon}"></i><b>${esc(sp.name)}</b><em class="sp-rar" style="--src:${R.color}">${R.name}</em></div>
+        <p class="su-desc">${sp.desc}</p>
+        <div class="cp-dbon"><span><em>Power</em><b>${powTxt(s, id)}</b></span><span><em>Cooldown</em><b>${sp.cooldown}s</b></span></div>
+        <p class="spv-status"></p>
+        <div class="spv-act"></div>`, { center: true, round: true, cls: 'cp-sheet su-sheet spv-sheet', onClose: () => UI.stop() });
+      cur = { id, el };
+      const cv = el.querySelector('.su-cv');
+      const play = () => { const ok = MF.SpellPreview && MF.SpellPreview.start(cv, id, s, { lead: 0.08 }); if (!ok) el.querySelector('.su-tag').textContent = 'PREVIEW UNAVAILABLE'; return ok; };
+      play();
+      el.querySelector('.spv-replay').addEventListener('click', play);
+      renderActions(el, s, id, !!opts.equip && MF.spellUnlocked(s, id));
+      return el;
+    },
+    /** Stops the preview (closing or replacing the sheet). */
+    stop() { if (MF.SpellPreview) MF.SpellPreview.stop(); cur = null; },
+    isOpen: () => !!cur,
+    equip, css,
+  });
+  if (typeof document !== 'undefined') { if (document.head) css(); else document.addEventListener('DOMContentLoaded', css); }
+})(typeof window !== 'undefined' ? window : globalThis);
+</script>
+<script>
+/* Arcane Forge: Magefall — testing controls in Settings (owner, Oct 2026).
+   - Unlock all companions & spells: every companion in MF.comp.LIST is added at Lv.1 (ones you have keep their level)
+     and every spell in MF.SPELLS becomes learned and selectable (s.testUnlock.spells lets MF.spellReached pass; build.js).
+     Nothing is equipped, the spell bar and the companion at your side stay as they are; gold, gems, potions, stages and
+     rewards are untouched. Saved with the game, so it survives a reload; clicking again changes nothing.
+   - Biome switching (device setting, off by default): a small yellow triangle under the Starfall chip; each tap shows
+     the next biome's painting, its living background, ambient particles and light on the battle scene (wrapping round).
+     Visual only: the fight, its enemies, rewards and progress follow the real stage. Turning it off returns the scene
+     to the biome of the stage you are on. */
+(function (root) {
+  'use strict';
+  const MF = (root.MF = root.MF || {});
+  let idx = null; // biome override (index in MF.ZONES) or null
+
+  const game = () => (MF.game && MF.game.current) || (MF.app && MF.app.game);
+  const scene = () => MF.debugScene;
+  const settings = () => (MF.app && MF.app.settings) || {};
+
+  /** Shows zone z on the battle scene: painting, scenery, ambient drift and light all key off scene.zone. */
+  function show(sc, z) {
+    if (!sc || !z || sc.zone === z) return;
+    sc.scenery(z);              // twinkles, bats, and clears the old biome's ambient particles
+    sc.zone = z;
+    sc.ambAcc = {}; sc.lightning = 0;
+    sc.bgLife = null;           // bg-life.js rebuilds the new biome's birds / weather from scratch
+  }
+  const realZone = () => { const g = game(), b = g && g.battle; return (b && b.info && b.info.zone) || (scene() && scene().zone) || MF.ZONES[0]; };
+
+  const TT = (MF.TestTools = {
+    /** One click: all companions and spells available. Returns { comps, spells } newly added. */
+    unlockAll() {
+      const g = game(), s = g && g.s; if (!s) return null;
+      const C = MF.comp; s.companions = s.companions || { owned: {}, equipped: null, unseen: 0, tokens: 0 };
+      let comps = 0, spells = 0;
+      for (const d of C.LIST) if (!s.companions.owned[d.key]) { s.companions.owned[d.key] = { lvl: 1, found: Date.now() }; comps++; }
+      s.testUnlock = Object.assign({}, s.testUnlock, { spells: 1 });
+      s.learned = s.learned || {}; s.spellSeen = s.spellSeen || {};
+      for (const sp of MF.SPELLS) { if (!s.learned[sp.id]) spells++; s.learned[sp.id] = 1; s.spellSeen[sp.id] = 1; } // no "new spell" pop-up for each one
+      MF.app.save(); MF.ui.refresh();
+      for (const t of ['tab-spells', 'tab-inventory']) { const el = document.getElementById(t); if (el) el.dataset.sig = ''; }
+      return { comps, spells };
+    },
+
+    biomeOn: () => settings().biomeSwitch === true,
+    /** Turns biome switching on or off (Settings toggle). Off clears the override at once. */
+    setBiome(on) {
+      settings().biomeSwitch = !!on; MF.app.saveSettings();
+      if (!on) { idx = null; show(scene(), realZone()); }
+      TT.syncButton();
+    },
+    /** The next biome after the one on screen. */
+    next() {
+      const sc = scene(); if (!sc) return;
+      const i = MF.ZONES.indexOf(idx != null ? MF.ZONES[idx] : sc.zone);
+      idx = (i + 1) % MF.ZONES.length;
+      show(sc, MF.ZONES[idx]);
+      const b = document.getElementById('biome-tri'); if (b) b.setAttribute('aria-label', `Next biome (showing ${MF.ZONES[idx].name})`);
+      if (MF.ui && MF.ui.toast) MF.ui.toast(`Biome: ${MF.ZONES[idx].name}`);
+    },
+    override: () => (idx == null ? null : MF.ZONES[idx]),
+
+    syncButton() {
+      let b = document.getElementById('biome-tri');
+      const host = document.getElementById('scene-ui');
+      if (!b && host) {
+        b = document.createElement('button');
+        b.id = 'biome-tri'; b.type = 'button'; b.setAttribute('aria-label', 'Next biome');
+        b.addEventListener('click', (e) => { e.stopPropagation(); TT.next(); });
+        host.appendChild(b);
+      }
+      if (b) b.hidden = !TT.biomeOn();
+    },
+
+    install() {
+      if (typeof document === 'undefined' || document.getElementById('test-tools-css')) return;
+      const st = document.createElement('style'); st.id = 'test-tools-css';
+      // a 44 px invisible touch target under the Starfall chip, a small yellow triangle in it
+      st.textContent = `
+#biome-tri{position:absolute;left:max(6px,env(safe-area-inset-left,0px));top:98px;width:44px;height:44px;padding:0;border:0;background:none;z-index:3;pointer-events:auto;-webkit-tap-highlight-color:transparent;cursor:pointer}
+#biome-tri[hidden]{display:none}
+#biome-tri::after{content:'';position:absolute;left:16px;top:14px;border-style:solid;border-width:8px 0 8px 13px;border-color:transparent transparent transparent #ffd23f;filter:drop-shadow(0 0 1px #3a2a08) drop-shadow(0 1px 1px rgba(0,0,0,0.6))}
+#biome-tri:active::after{transform:translateX(2px)}
+.tt-sec{display:grid;gap:8px;margin-top:10px;padding:10px;border:2px dashed #b48a2c;border-radius:var(--r)}
+.tt-sec h3{margin:0;font-family:var(--font-title);font-size:18px;font-weight:400;letter-spacing:1px;color:#6a4a10}
+.tt-sec .note{margin:0}
+.tt-tog b{display:inline-block;min-width:34px}
+.tt-tog.on{background:var(--green)}`;
+      document.head.appendChild(st);
+      // a new stage sets the real biome on the scene: keep the override on top while it is active
+      const P = MF.Scene && MF.Scene.prototype;
+      if (P && !P.__testTools) {
+        P.__testTools = true;
+        const handle = P.handle;
+        P.handle = function (e) {
+          const r = handle.call(this, e);
+          if (e && e.type === 'stage' && idx != null && this === scene()) show(this, MF.ZONES[idx]);
+          return r;
+        };
+      }
+      const ready = () => { if (document.getElementById('scene-ui') && MF.app && MF.app.settings) TT.syncButton(); else setTimeout(ready, 200); };
+      ready();
+    },
+  });
+  if (typeof document !== 'undefined') { if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => TT.install()); else TT.install(); }
 })(typeof window !== 'undefined' ? window : globalThis);
 </script>
 </body></html>
