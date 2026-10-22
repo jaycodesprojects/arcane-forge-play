@@ -16330,6 +16330,7 @@ small { font-size: var(--fs-xs); }
     $('btn-chat').setAttribute('aria-pressed', tab === 'chat');
     for (const b of document.querySelectorAll('.nav-btn')) b.classList.toggle('active', b.dataset.tab === tab);
     for (const t of ['loadout', 'inventory', 'spells', 'conclave', 'codex', 'shop', 'chat']) $('tab-' + t).hidden = t !== tab;
+    if (MF.FullTabs) MF.FullTabs.sync(tab);
     if (tab === 'chat') MF.chat.show($('tab-chat'));
     else { MF.chat.hide(); if (tab !== 'loadout') MF.sheets.renderTab(tab); }
   };
@@ -17916,7 +17917,7 @@ small { font-size: var(--fs-xs); }
       const cs = s.companions || { owned: {}, equipped: null, unseen: 0 };
       const C = MF.comp;
       const tkNow = Math.floor(cs.tokens || 0);
-      const sig = `${view}|${cs.equipped}|${Object.entries(cs.owned).map(([k, o]) => k + o.lvl).join(',')}|${s.bag.length}|${C.findLevel(s)}|${tkNow >= C.COST ? 1 : 0}|${tkNow >= C.COST * 5 ? 1 : 0}`;
+      const sig = `${view}|${cs.equipped}|${Object.entries(cs.owned).map(([k, o]) => k + o.lvl).join(',')}|${s.bag.length}|${C.findLevel(s)}|${tkNow >= C.COST ? 1 : 0}|${tkNow >= C.COST * (S.cpN || 1) ? 1 : 0}|${S.cpN || 1}`;
       if (soft && el.dataset.sig === sig) {
         // tokens tick up with every kill: update the counter in place (keeps the animations and scroll)
         const n = el.querySelector('#cp-tk-n');
@@ -17956,7 +17957,7 @@ small { font-size: var(--fs-xs); }
         const found = Object.keys(cs.owned).length;
         const tk = Math.floor(cs.tokens || 0), COST = C.COST;
         const sumPanel = `<div class="cp-sumbar"><i class="ico2 ico-ctoken"></i><div class="cp-tk"><span><b id="cp-tk-n">${tk}</b> companion tokens</span><i class="cp-tkbar"><i id="cp-tk-fill" style="width:${Math.min(100, ((tk % COST) / COST) * 100)}%"></i></i><small id="cp-tk-sub">${tk >= COST ? `${Math.floor(tk / COST)} summon${tk >= COST * 2 ? 's' : ''} ready` : `${COST - tk} more to summon`}</small></div>
-          <div class="cp-sbtns"><button class="btn ${tk >= COST ? 'green' : 'off'}" id="cp-s1" type="button">Summon</button><button class="btn ${tk >= COST * 5 ? 'gold' : 'off'}" id="cp-s5" type="button">×5</button></div></div>`;
+          <div class="cp-sbtns"><button class="btn ${tk >= COST * (S.cpN || 1) ? 'green' : 'off'}" id="cp-s1" type="button">Summon${(S.cpN || 1) > 1 ? ` ×${S.cpN}` : ''}</button><button class="btn cp-mul${(S.cpN || 1) > 1 ? ' gold sel' : ''}" id="cp-s5" type="button" aria-pressed="${(S.cpN || 1) > 1}">×${S.cpN === 10 ? 10 : 5}</button></div></div>`;
         el.innerHTML = `${seg}
           <div class="tab-scroll cp-scroll">
             ${card}
@@ -17968,8 +17969,8 @@ small { font-size: var(--fs-xs); }
             ${groups}
           </div>`;
         for (const b of el.querySelectorAll('[data-cp]')) b.addEventListener('click', () => S.companion(b.dataset.cp));
-        el.querySelector('#cp-s1').addEventListener('click', () => S.summon(1));
-        el.querySelector('#cp-s5').addEventListener('click', () => S.summon(5));
+        el.querySelector('#cp-s1').addEventListener('click', () => S.summon(S.cpN || 1));
+        el.querySelector('#cp-s5').addEventListener('click', () => { S.cpN = S.cpN === 5 ? 10 : S.cpN === 10 ? 1 : 5; el.dataset.sig = ''; S.renderTab('inventory'); });
         if (cs.unseen) { cs.unseen = 0; const dot = document.getElementById('dot-inv'); if (dot) dot.hidden = true; }
       }
       for (const b of el.querySelectorAll('[data-v]')) b.addEventListener('click', () => { S.invView = b.dataset.v; el.dataset.sig = ''; S.renderTab('inventory'); });
@@ -19879,4 +19880,63 @@ small { font-size: var(--fs-xs); }
 })(typeof window !== 'undefined' ? window : globalThis);
 </script>
 
+<script>
+/* Full-screen tabs (owner): Companions, Spells and Shop fill the whole screen above the bottom bar, like the Conclave.
+ * Their three sections move once into an overlay (#ft) with a Conclave-style header (back, icon, title); the game keeps
+ * rendering them by id as before. UI.setTab calls MF.FullTabs.sync(tab) (build.js). */
+(function (global) {
+  'use strict';
+  const MF = (global.MF = global.MF || {});
+  const PAGES = {
+    inventory: { title: 'COMPANIONS', sub: 'Allies that fight beside you' },
+    spells: { title: 'SPELLS', sub: 'Learn, upgrade and fill your bar' },
+    shop: { title: 'SHOP', sub: 'Gifts, potions and gems' },
+  };
+  const CSS = `
+#ft { display: none; position: absolute; left: 0; right: 0; top: 0; bottom: var(--nav-h, 56px); z-index: 15; flex-direction: column;
+  padding-top: env(safe-area-inset-top, 0px); background: radial-gradient(120% 60% at 50% 0%, #3d2768 0%, #241a45 55%, #1a1430 100%); }
+.app.tab-full #ft { display: flex; }
+.app.tab-full #fly { display: none; }
+#ft .ft-head { flex: none; display: flex; align-items: center; }
+#ft > .tab { flex: 1; min-height: 0; color: var(--txt); border-top: 2px solid #e9b84a;
+  background: var(--parch-tex), linear-gradient(#f2e6cb, #e6d6b2); box-shadow: inset 0 2px 0 rgba(255, 248, 225, 0.8); }
+#ft > .tab[hidden] { display: none; }
+`;
+  let host = null, title = null, sub = null, emb = null;
+
+  function build() {
+    const app = document.getElementById('app');
+    if (!app) return false;
+    const st = document.createElement('style');
+    st.id = 'full-tabs-css';
+    st.textContent = CSS;
+    document.head.appendChild(st);
+    host = document.createElement('div');
+    host.id = 'ft';
+    host.className = 'cvx';
+    host.innerHTML = `<div class="chat-head cvx-head ft-head"><button class="cvx-back" id="ft-back" type="button" aria-label="Back to the game">‹</button><span class="cvx-emb"><i class="ico2"></i></span><span class="cvx-title"><b></b><small></small></span></div>`;
+    title = host.querySelector('.cvx-title b');
+    sub = host.querySelector('.cvx-title small');
+    emb = host.querySelector('.cvx-emb .ico2');
+    for (const k of Object.keys(PAGES)) { const s = document.getElementById('tab-' + k); if (s) host.appendChild(s); }
+    const nav = document.getElementById('nav');
+    app.insertBefore(host, nav ? nav.nextSibling : null);
+    host.querySelector('#ft-back').addEventListener('click', () => MF.ui.setTab('loadout'));
+    return true;
+  }
+
+  /** Shows the overlay for a full-screen tab, hides it for any other. */
+  function sync(tab) {
+    if (!host && !build()) return;
+    const p = PAGES[tab];
+    document.getElementById('app').classList.toggle('tab-full', !!p);
+    if (!p) return;
+    title.textContent = p.title;
+    sub.textContent = p.sub;
+    emb.className = 'ico2 ico-nav_' + tab;
+  }
+
+  MF.FullTabs = { sync, PAGES };
+})(typeof window !== 'undefined' ? window : globalThis);
+</script>
 </body></html>
