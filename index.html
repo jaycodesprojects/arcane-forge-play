@@ -19118,7 +19118,8 @@ small { font-size: var(--fs-xs); }
       btn.disabled = true;
       const r = await O().send(text);
       host.querySelector('#chat-blocked').hidden = r.ok || r.code !== 'profanity'; // a blocked word: a red line above the box, no pop-up
-      if (r.ok) { input.value = ''; host.querySelector('#chat-count').textContent = `0/${MF.BACKEND.chatMax}`; scrollEnd(true); }
+      if (r.ok || r.code === 'profanity') { input.value = ''; host.querySelector('#chat-count').textContent = `0/${MF.BACKEND.chatMax}`; } // a blocked message is erased too
+      if (r.ok) scrollEnd(true);
       else if (r.code !== 'profanity') MF.ui.toast(O().errorText(r));
       cooldown();
     });
