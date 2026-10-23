@@ -16654,6 +16654,7 @@ small { font-size: var(--fs-xs); }
       { sel: '#scene', title: 'Your battle', text: 'Your wizard fights dragons and monsters on his own. Clear battles to reach each zone’s boss.' },
       { sel: '#skills', title: 'Your spell bar', text: 'You begin with Arcane Lance. New spells unlock as you climb, from Common all the way to Mythic!' },
       { sel: '#btn-forge', title: 'The magic cauldron', text: 'Brew potions in the cauldron and gear comes bubbling out! Upgrades wait in your Upgrade Vault so you can compare them.' },
+      { sel: '#btn-vault', title: 'Your Upgrade Vault', text: 'This chest counts the upgrades waiting for you, like 0/10. With Auto-open on, every piece that beats what you wear is kept here so you can compare it first. Tap the chest to review them. At 10/10 the vault is full: new upgrades are then put on straight away, so brewing never stops.' },
       { sel: '#grid', title: 'Your gear', text: 'Eight slots. Rarer pieces mean far more power, and elemental pieces boost their matching spell.' },
       { sel: '#game-chip', title: 'Starfall', text: 'Your daily mini-game! Catch falling stars in your cauldron: every 16 points pays 2 gems. The gold dot means today’s gems are waiting.' },
       { sel: '#nav', title: 'Your world', text: 'Master spells, join a Conclave and much more down here.' },
@@ -17107,7 +17108,8 @@ small { font-size: var(--fs-xs); }
         <button class="btn green" id="a-equip" type="button"><b>Equip</b></button>
       </div>
       <button class="btn wide fd-back" id="a-back" type="button">‹ Back to the Upgrade Vault</button>`, { center: true, round: true });
-    const back = () => { MF.ui.refresh(); if (game.s.forge.found.length) S.found(); else S.close(); };
+    const at = s.forge.found.indexOf(it);
+    const back = () => { MF.ui.refresh(); const L = game.s.forge.found; if (!L.length) { S.close(); return; } S.foundItem(L[Math.min(at, L.length - 1)].uid); };
     el.querySelector('#a-equip').addEventListener('click', () => { const r = G.foundEquip(game, uid); if (r) MF.ui.toast(`Equipped ${M.itemName(r.item)}${r.pruned && r.pruned.count ? ` · ${r.pruned.count} weaker salvaged` : ''}`); back(); });
     el.querySelector('#a-keep').addEventListener('click', () => { if (G.foundKeep(game, uid)) { MF.ui.toast('Kept in your bag'); back(); } else MF.ui.toast('Your bag is full'); });
     el.querySelector('#a-salvage').addEventListener('click', () => { const r = G.foundSalvage(game, uid); if (r) MF.ui.toast(`+${U.fmt(r.value.gold)} gold`); back(); });
@@ -19790,7 +19792,7 @@ small { font-size: var(--fs-xs); }
       for (const b of el.querySelectorAll('[data-em]')) b.classList.toggle('sel', b.dataset.em === d.emblem);
       for (const b of el.querySelectorAll('[data-col]')) b.classList.toggle('sel', b.dataset.col === d.color);
     };
-    name.addEventListener('input', paint); desc.addEventListener('input', paint);
+    name.addEventListener('input', () => { err.textContent = ''; paint(); }); desc.addEventListener('input', () => { err.textContent = ''; paint(); });
     for (const b of el.querySelectorAll('[data-em]')) b.addEventListener('click', () => { d.emblem = b.dataset.em; paint(); });
     for (const b of el.querySelectorAll('[data-col]')) b.addEventListener('click', () => { d.color = b.dataset.col; paint(); });
     paint();
@@ -19798,6 +19800,8 @@ small { font-size: var(--fs-xs); }
       const n = cleanName(name.value);
       if (n.length < 3) { err.textContent = 'The name needs at least 3 letters or numbers.'; return; }
       const motto = desc.value.replace(/\s+/g, ' ').trim().slice(0, V.DESC_MAX);
+      if (MF.isProfane(n)) { err.textContent = 'That name is blocked by moderation.'; return; }
+      if (MF.isProfane(motto)) { err.textContent = 'That motto is blocked by moderation.'; return; }
       if (create) {
         if (s.gems < V.COST) { err.textContent = `You need ${V.COST} gems to found a Conclave (you have ${s.gems}).`; return; }
         s.gems -= V.COST;
@@ -19825,24 +19829,34 @@ small { font-size: var(--fs-xs); }
       host.querySelector('#cv-go-tab').addEventListener('click', () => MF.chat.openTab('hall'));
       return;
     }
+    // the same look and rules as World chat: heads that open profiles, a letter count, the blocked-word line, 3 s pacing
+    const MAX = (MF.BACKEND && MF.BACKEND.chatMax) || 200;
     host.innerHTML = `<div class="cv-proto">Prototype: Conclave chat stays on this device. Members won’t answer until online play is switched on.</div>
       <div class="chat-list cv-clist" id="cv-clist" role="log" aria-live="polite" aria-label="Conclave messages"></div>
+      <div class="chat-blocked" id="cv-blocked" role="alert" hidden>Your message is blocked by moderation</div>
       <form class="chat-form" id="cv-cform" autocomplete="off">
-        <input id="cv-cin" maxlength="120" placeholder="Message your Conclave" aria-label="Message" enterkeyhint="send">
-        <button class="btn green" type="submit">Send</button>
+        <input id="cv-cin" maxlength="${MAX}" placeholder="Message your Conclave…" aria-label="Message" enterkeyhint="send">
+        <span class="chat-count" id="cv-count">0/${MAX}</span>
+        <button class="btn green" id="cv-send" type="submit">Send</button>
       </form>`;
-    const ci = host.querySelector('#cv-cin');
-    ci.value = V.draft || '';
-    ci.addEventListener('input', () => { V.draft = ci.value; });
+    const ci = host.querySelector('#cv-cin'), count = host.querySelector('#cv-count'), blocked = host.querySelector('#cv-blocked'), btn = host.querySelector('#cv-send');
+    const setCount = () => { count.textContent = `${ci.value.length}/${MAX}`; };
+    ci.value = V.draft || ''; setCount();
+    ci.addEventListener('input', () => { V.draft = ci.value; setCount(); blocked.hidden = true; });
+    const left = () => Math.max(0, 3000 - (Date.now() - (V.lastSend || 0)));
+    const tick = () => { const l = left(); btn.disabled = l > 0; btn.textContent = l > 0 ? `${Math.ceil(l / 1000)} s` : 'Send'; if (l > 0) setTimeout(() => { if (btn.isConnected) tick(); }, 250); };
+    tick();
     paintChat(true);
     host.querySelector('#cv-cform').addEventListener('submit', (e) => {
       e.preventDefault();
-      const inp = host.querySelector('#cv-cin');
-      const body = inp.value.replace(/\s+/g, ' ').trim().slice(0, 120);
+      const body = ci.value.replace(/[\u0000-\u001f\u007f]/g, '').replace(/\s+/g, ' ').trim().slice(0, MAX);
       if (!body) return;
-      push({ me: true, name: myName(), rank: cv.rank, body, t: Date.now() });
-      inp.value = '';
-      V.draft = '';
+      if (left() > 0) { MF.ui.toast(`Wait ${Math.ceil(left() / 1000)} s before sending again`); return; }
+      const clear = () => { ci.value = ''; V.draft = ''; setCount(); };
+      if (MF.isProfane(body)) { blocked.hidden = false; clear(); return; } // blocked: a red line, the text is erased
+      V.lastSend = Date.now();
+      push({ me: true, name: myName(), rank: cv.rank, body, t: Date.now() }); // your current name, even right after a rename
+      clear(); tick();
     });
   };
   function push(msg) {
@@ -19861,11 +19875,15 @@ small { font-size: var(--fs-xs); }
     for (const m of cv.chat) {
       const d = document.createElement('div');
       if (m.sys) { d.className = 'cv-sys'; d.textContent = m.body; list.appendChild(d); continue; }
+      const mem = !m.me && (cv.members || []).find((x) => x.name === m.name);
+      const tier = m.me ? MF.model.wizardTier(game.s) : mem ? mem.tier | 0 : 0;
+      const head = MF.PlayerCard ? MF.PlayerCard.head(m.me ? game.s.profile.avatar : 0, tier, 32) : MF.profile.avatarBox(tier, 24);
       d.className = `msg${m.me ? ' mine' : ''}`;
-      d.innerHTML = `<div class="msg-main"><div class="msg-top"><b class="msg-name"></b>${rankBadge(m.rank || 'acolyte')}<time></time></div><p class="msg-body"></p></div>`;
+      d.innerHTML = `${head}<div class="msg-main"><div class="msg-top"><b class="msg-name"></b>${rankBadge(m.rank || 'acolyte')}<time></time></div><p class="msg-body"></p></div>`;
       d.querySelector('.msg-name').textContent = m.name;
       d.querySelector('.msg-body').textContent = m.body;
       d.querySelector('time').textContent = new Date(m.t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      if (MF.PlayerCard) MF.PlayerCard.bind(d, m.me ? { me: true } : { sample: mem || { name: m.name, rank: m.rank || 'acolyte', tier: 0, power: 0 }, conclave: cv }, '.msg-name');
       list.appendChild(d);
     }
     if (atEnd) list.scrollTop = list.scrollHeight;
@@ -19978,6 +19996,120 @@ small { font-size: var(--fs-xs); }
 })(typeof window !== 'undefined' ? window : globalThis);
 </script>
 
+<script>
+(window.MF = window.MF || {}).PROFANITY_SEED = {"strong":["word","fuck","shit","cunt","nigger","nigga","faggot","whore","bitch","hitler","nigg","niga","fuk","fck","fvck","phuck","phuk","biatch","biotch","btch","kunt","fagot","fagget","badword"],"words":["ass","arse","asshole","dick","cock","pussy","tits","twat","fag","spic","kike","chink","bastard","jizz","cum","sex","nsfw","kys","retard","rape","pedo","porn","wank","slut","nazi","fucks","fucking","fuckin","fucked","fucker","fuckers","fuckhead","fuckheads","fuckface","fuckfaces","fuckwit","fuckwits","fuckwad","fuckwads","fucktard","fucktards","fuckstick","fucksticks","fuckboy","fuckboys","fuckboi","fuckbois","motherfuck","motherfucker","motherfuckers","motherfucking","motherfuckin","motherfucked","muthafucka","muthafuckas","muthafucker","muthafuckers","muthafucking","mofo","mofos","shits","shitty","shittier","shittiest","shitting","shittin","shitted","shithead","shitheads","shitface","shitfaces","shitfaced","shitbag","shitbags","shitstain","shitstains","shitfuck","shitfucker","bullshit","bullshits","bullshitting","bullshitter","bullshitters","horseshit","batshit","dipshit","dipshits","dumbshit","dumbshits","apeshit","shitshow","shitshows","cunts","cunting","cunted","cuntface","cuntfaces","cunthead","cuntheads","cuntbag","cuntbags","twats","twathead","twatheads","wanker","wankers","wanking","wanked","wankstain","wankstains","bellend","bellends","arsehole","arseholes","assholes","asshat","asshats","asswipe","asswipes","arsewipe","arsewipes","dickhead","dickheads","dickface","dickfaces","dickwad","dickwads","dickweed","dickweeds","dickbag","dickbags","cockhead","cockheads","cockwomble","cockwombles","cocksucker","cocksuckers","cocksucking","prickhead","prickheads","bitchass","bitchface","bitchfaces","sonofabitch","sonofabitches","sluts","slutty","sluttier","sluttiest","whores","whoring","whoreson","fuckoff","fuckyou","fucku","fuckurself","gofuckyourself","shyt","sht","cnt","stfu","gtfo","wtf","fu","fk","fkn","fking","fkin","ffs","fml","mf","mfer","omfg","lmfao","smd","kms","jfc","dafuq","hoe","thot","skank","slag","prick","bollocks","tosser","dumbass","jackass","fatass","smartass","cuck","coon","gook","wetback","tranny","dyke","raghead","towelhead","paki","beaner","kkk","nonce","retarded","rapist","raped","raping","porno","penis","vagina","dildo","boob","boobs","horny","nudes","anal","anus","badword"]};
+/* Arcane Forge: Magefall — one set of moderation rules for every piece of player text (owner, Oct 2026): profile
+   names, World chat, Conclave chat, Conclave names and mottos. The server (supabase/schema.sql normalize_variants /
+   is_profane) applies the same rules to names, World chat and the Conclave name on player profiles.
+   - Word list: the game's own list + every word seeded in supabase/schema.sql (build.js puts them in
+     MF.PROFANITY_SEED, so the rules work offline too) + words added later in Supabase (merged at start).
+   - Text is normalised before checking: lower case; accents and look-alike letters (Cyrillic / Greek / full-width)
+     turned into plain a-z; invisible characters dropped; leetspeak undone (0 o, 1 i or l, 3 e, 4 a, 5 s, 6 g, 7 t,
+     8 b, 9 g, @ a, $ s, ! i, | l or i, + t).
+   - Stretched letters are caught ("fuuuck", "niiigger"): every letter of a blocked word may repeat.
+   - "strong" words are blocked anywhere, even inside other words or with spaces / symbols between the letters.
+   - "word" words are blocked as whole words (so "class" and "grape" stay fine), also with an s / es / z ending and
+     when spelled out letter by letter ("a s s", "f.u.c.k").
+   - Saves are cleaned on load: a Conclave name or motto, Conclave chat lines or a profile name that break the rules
+     (for example made before these checks existed) are removed. */
+(function (root) {
+  'use strict';
+  const MF = (root.MF = root.MF || {});
+  const Mod = (MF.Mod = {});
+
+  // look-alike letters -> a-z (applied after NFKD, which already turns full-width and accented letters plain)
+  const LOOK = {
+    'а': 'a', 'в': 'b', 'е': 'e', 'ё': 'e', 'к': 'k', 'м': 'm', 'н': 'h', 'о': 'o', 'р': 'p', 'с': 'c', 'т': 't', 'у': 'y', 'х': 'x',
+    'ѕ': 's', 'і': 'i', 'ї': 'i', 'ј': 'j', 'ԁ': 'd', 'ɡ': 'g', 'ı': 'i', 'ℓ': 'l', 'α': 'a', 'β': 'b', 'ε': 'e', 'η': 'n', 'ι': 'i',
+    'κ': 'k', 'ν': 'v', 'ο': 'o', 'ρ': 'p', 'τ': 't', 'υ': 'u', 'χ': 'x', 'ω': 'w', 'ß': 'ss', 'æ': 'ae', 'œ': 'oe', 'ø': 'o', 'đ': 'd', 'ł': 'l',
+    '¡': 'i', '€': 'e', '£': 'l',
+  };
+  const LEET = { '0': 'o', '3': 'e', '4': 'a', '5': 's', '6': 'g', '7': 't', '8': 'b', '9': 'g', '@': 'a', '$': 's', '!': 'i', '+': 't' };
+
+  /** Lower case, accents / look-alikes to a-z, invisible characters removed (no leetspeak yet). */
+  const base = (t) => {
+    let s = String(t == null ? '' : t).normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[­​-‏⁠﻿]/g, '').toLowerCase();
+    let out = '';
+    for (const ch of s) out += LOOK[ch] !== undefined ? LOOK[ch] : ch;
+    return out;
+  };
+  /** Both readings of 1 and |: "sh1t" (1 = i) and "s1ut" (1 = l). */
+  const variants = (t) => {
+    const b = base(t);
+    const leet = (one, bar) => { let o = ''; for (const ch of b) o += ch === '1' ? one : ch === '|' ? bar : LEET[ch] !== undefined ? LEET[ch] : ch; return o; };
+    const a = leet('i', 'l'), c = leet('l', 'i');
+    return a === c ? [a] : [a, c];
+  };
+  /** Letters typed one by one with gaps ("a s s", "f.u.c.k") joined into one word. */
+  const join = (norm) => norm.replace(/\b([a-z])[^a-z]+(?=[a-z]\b)/g, '$1');
+  const pattern = (w) => w.replace(/[a-z]/g, '$&+'); // every letter may repeat
+
+  let built = null, sig = '';
+  function lists() {
+    const P = MF.PROFANITY || { strong: [], words: [] };
+    const now = `${P.strong.length}:${P.words.length}`;
+    if (built && sig === now) return built;
+    sig = now;
+    const clean = (a) => [...new Set(a.map((w) => String(w).toLowerCase()).filter((w) => /^[a-z]{2,40}$/.test(w)))];
+    built = {
+      strong: clean(P.strong).map((w) => new RegExp(pattern(w))),
+      words: clean(P.words).map((w) => new RegExp(`(^|[^a-z])${pattern(w)}(s|es|z)?($|[^a-z])`)),
+    };
+    return built;
+  }
+
+  /** Same idea as the original MF.normalizeText (kept for callers): the first reading. */
+  Mod.normalize = (t) => variants(t)[0];
+  /** True when the text contains a blocked word, however it is spelled. */
+  Mod.isProfane = (t) => {
+    const L = lists();
+    for (const v of variants(t)) {
+      for (const norm of new Set([v, join(v)])) {
+        const squashed = norm.replace(/[^a-z]/g, '');
+        if (L.strong.some((re) => re.test(squashed))) return true;
+        if (L.words.some((re) => re.test(norm))) return true;
+      }
+    }
+    return false;
+  };
+
+  /** Removes rule-breaking text from a save (made before these checks, or with an older word list). */
+  Mod.cleanSave = (s) => {
+    if (!s) return 0;
+    let n = 0;
+    const cv = s.conclave;
+    if (cv) {
+      if (Mod.isProfane(cv.name)) { cv.name = 'Unnamed Conclave'; n++; }
+      if (cv.desc && Mod.isProfane(cv.desc)) { cv.desc = ''; n++; }
+      if (Array.isArray(cv.chat)) {
+        const before = cv.chat.length;
+        cv.chat = cv.chat.filter((m) => !Mod.isProfane(m.body) && !Mod.isProfane(m.name));
+        n += before - cv.chat.length;
+      }
+    }
+    if (s.profile && s.profile.name && Mod.isProfane(s.profile.name)) { s.profile.name = ''; s.profile.renames = 0; n++; } // choose again, free
+    return n;
+  };
+
+  Mod.install = () => {
+    if (Mod.__on) return;
+    Mod.__on = true;
+    const P = (MF.PROFANITY = MF.PROFANITY || { strong: [], words: [] });
+    const seed = MF.PROFANITY_SEED || {};
+    for (const k of ['strong', 'words']) for (const w of seed[k] || []) if (!P[k].includes(w)) P[k].push(w);
+    MF.isProfane = Mod.isProfane;
+    MF.normalizeText = Mod.normalize;
+    // clean the save when the game starts (before any screen shows it)
+    const V = MF.conclave;
+    if (V && V.init && !V.__modInit) {
+      V.__modInit = true;
+      const init = V.init;
+      V.init = (g) => { const n = Mod.cleanSave(g && g.s); if (n) setTimeout(() => { try { MF.app.save(); MF.ui.refresh(); } catch (e) { /* not ready */ } }, 0); return init(g); };
+    }
+  };
+  Mod.install();
+})(typeof window !== 'undefined' ? window : globalThis);
+</script>
 <script>
 /* Full-screen tabs (owner): Companions, Spells and Shop fill the whole screen above the bottom bar, like the Conclave.
  * Their three sections move once into an overlay (#ft) with a Conclave-style header (back, icon, title); the game keeps
@@ -20578,6 +20710,17 @@ small { font-size: var(--fs-xs); }
 .cv-row.cv-row{gap:12px}
 .cvx-emb.cvx-emb{min-width:42px}
 .cv-leave-prev.cv-leave-prev{gap:14px}
+/* no text is ever cut off (owner): headers, names and mottos wrap instead of ending in "..." or being clipped */
+.cvx-head.cvx-head{min-height:60px;padding-top:9px;padding-bottom:9px;overflow:visible}
+.cvx-title.cvx-title{line-height:1.15;overflow:visible}
+.cvx-title.cvx-title b{font-size:clamp(20px,7vw,26px);line-height:1.15;padding-top:2px;overflow:visible;overflow-wrap:break-word}
+.cvx-title.cvx-title small{white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;line-height:1.25}
+.cv-row.cv-row .grow > b{white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:break-word}
+.cv-row.cv-row .cv-motto{display:block;-webkit-line-clamp:unset;overflow:visible}
+.cv-mname.cv-mname,.lb-name.lb-name{white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;line-height:1.2}
+.msg-name.msg-name{white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere}
+.msg-top{flex-wrap:wrap}
+.lb-row{height:auto!important;min-height:40px;padding-top:4px!important;padding-bottom:4px!important}
 /* the found / edit sheet, as in the mock-up */
 .cv-sheet .cv-prev{position:relative;gap:14px;padding:12px 14px;border:2px solid #c9952e;border-radius:10px;background:radial-gradient(circle at 18% 40%,#4a2c86 0,#2a1a52 55%,#1c1236 100%);box-shadow:inset 0 0 0 1px rgba(255,224,138,0.35),inset 0 0 18px rgba(0,0,0,0.45),0 2px 4px rgba(42,26,58,0.35)}
 .cv-sheet .cv-prev{background:${CORNERS},radial-gradient(circle at 18% 40%,#4a2c86 0,#2a1a52 55%,#1c1236 100%)!important;background-position:4px 4px,calc(100% - 4px) 4px,4px calc(100% - 4px),calc(100% - 4px) calc(100% - 4px),0 0!important;background-size:34px 34px,34px 34px,34px 34px,34px 34px,auto!important;background-repeat:no-repeat!important}
@@ -20813,7 +20956,8 @@ small { font-size: var(--fs-xs); }
       opts.back: a function that reopens the screen you came from (the leaderboard sits in a sheet too). */
   PC.open = async (who, opts = {}) => {
     const me = who.me || (who.id && MF.online && MF.online.myId && who.id === MF.online.myId());
-    const el = MF.sheets.open(`${MF.sheets.head('WIZARD', me ? 'Your profile' : 'Their wizard, Conclave and loadout')}<div class="pc" id="pc-body"></div>
+    // no heading (owner): the hero card with the wizard's portrait and name is the top of the sheet
+    const el = MF.sheets.open(`<div class="pc" id="pc-body" aria-label="${me ? 'Your profile' : 'Wizard profile'}"></div>
       ${opts.back ? '<div class="pc-foot"><button class="btn" type="button" id="pc-back">‹ Back</button></div>' : ''}`, { center: true, round: true, cls: 'pc-sheet' });
     if (opts.back) el.querySelector('#pc-back').addEventListener('click', opts.back);
     const body = el.querySelector('#pc-body');
@@ -20845,7 +20989,7 @@ small { font-size: var(--fs-xs); }
 .pc-link{cursor:pointer}
 .pc-link:hover{text-decoration:underline;text-decoration-color:rgba(233,184,74,0.8);text-underline-offset:2px}
 .pc-sheet{max-height:calc(100% - 24px);overflow-y:auto}
-.pc{display:flex;flex-direction:column;gap:8px}
+.pc{display:flex;flex-direction:column;gap:8px;margin-top:30px} /* room for the round X above the hero card */
 .pc .pc-hero.cv-card{align-items:center;padding:26px 30px 26px 28px}
 .pc-frame{flex:none;position:relative;width:92px;height:92px;border-radius:12px;padding:3px;background:linear-gradient(145deg,#fff1b0,#e0a434 45%,#8a5014);box-shadow:0 0 0 2px #24130a,0 3px 8px rgba(0,0,0,0.45),0 0 14px rgba(255,210,120,0.25)}
 .pc-frame .pc-por{display:block;width:100%;height:100%;border-radius:9px;box-shadow:inset 0 0 0 1.5px rgba(36,19,10,0.9),inset 0 0 14px rgba(0,0,0,0.35);background-color:#1d1f2c}
