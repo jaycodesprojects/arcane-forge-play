@@ -643,6 +643,8 @@ small { font-size: var(--fs-xs); }
 .chat-new { position: absolute; left: 50%; bottom: 60px; transform: translateX(-50%); height: 30px; padding: 0 12px; font-size: var(--fs-s); font-weight: var(--fw-b); color: var(--txt-l); background: var(--bar2); border: 2px solid var(--ink); border-radius: 15px; }
 .chat-form { flex: none; display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-top: 2px solid var(--panel3); }
 .chat-count { font-size: var(--fs-xs); color: #6a5a44; font-variant-numeric: tabular-nums; }
+.chat-blocked { flex: none; padding: 6px 12px 0; font-size: var(--fs-s); font-weight: var(--fw-b); color: #c8333a; }
+.chat-blocked[hidden] { display: none; }
 .chat-form .btn { height: 40px; min-width: 64px; font-size: var(--fs-m); }
 
 /* ---------- new item vs equipped item, side by side (chest result, bag item) */
@@ -19093,6 +19095,7 @@ small { font-size: var(--fs-xs); }
         <div class="chat-list" id="chat-list" role="log" aria-live="polite" aria-label="Chat messages"></div>
         <button class="chat-new" id="chat-new" type="button" hidden>New messages ↓</button>
         <div class="chat-gate" id="chat-gate" hidden></div>
+        <div class="chat-blocked" id="chat-blocked" role="alert" hidden>Your message is blocked by moderation</div>
         <form class="chat-form" id="chat-form" autocomplete="off">
           <input id="chat-input" maxlength="${MF.BACKEND.chatMax}" placeholder="Say something to all wizards…" aria-label="Message" enterkeyhint="send">
           <span class="chat-count" id="chat-count">0/${MF.BACKEND.chatMax}</span>
@@ -19105,7 +19108,7 @@ small { font-size: var(--fs-xs); }
     host.querySelector('#chat-close').addEventListener('click', () => MF.ui.setTab(MF.ui.lastTab || 'loadout'));
     list.addEventListener('scroll', () => { if (nearEnd()) host.querySelector('#chat-new').hidden = true; });
     host.querySelector('#chat-new').addEventListener('click', () => scrollEnd(true));
-    input.addEventListener('input', () => { host.querySelector('#chat-count').textContent = `${input.value.length}/${MF.BACKEND.chatMax}`; });
+    input.addEventListener('input', () => { host.querySelector('#chat-count').textContent = `${input.value.length}/${MF.BACKEND.chatMax}`; host.querySelector('#chat-blocked').hidden = true; });
     host.querySelector('#chat-form').addEventListener('submit', async (e) => {
       e.preventDefault();
       const text = input.value;
@@ -19114,8 +19117,9 @@ small { font-size: var(--fs-xs); }
       const btn = host.querySelector('#chat-send');
       btn.disabled = true;
       const r = await O().send(text);
+      host.querySelector('#chat-blocked').hidden = r.ok || r.code !== 'profanity'; // a blocked word: a red line above the box, no pop-up
       if (r.ok) { input.value = ''; host.querySelector('#chat-count').textContent = `0/${MF.BACKEND.chatMax}`; scrollEnd(true); }
-      else MF.ui.toast(O().errorText(r));
+      else if (r.code !== 'profanity') MF.ui.toast(O().errorText(r));
       cooldown();
     });
     host.querySelector('#chat-mutes').addEventListener('click', () => { for (const id of O().mutes()) O().mute(id, false); MF.ui.toast('Unmuted everyone'); });
