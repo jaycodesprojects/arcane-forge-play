@@ -16351,7 +16351,7 @@ small { font-size: var(--fs-xs); }
     $('btn-autoskill').addEventListener('click', () => { game.s.autoSkills = !game.s.autoSkills; UI.refresh(); });
     $('idle-chip').addEventListener('click', () => MF.sheets.idle());
     $('game-chip').addEventListener('click', () => { UI.starfallSeen = true; MF.sheets.starfall(); });
-    $('btn-chat').addEventListener('click', () => UI.setTab(UI.tab === 'chat' ? UI.lastTab || 'loadout' : 'chat'));
+    $('btn-chat').addEventListener('click', () => { if (UI.tab === 'chat') UI.setTab(UI.lastTab || 'loadout'); else MF.chat.openTab('world'); }); // the chat bubble always opens World chat
     for (const b of document.querySelectorAll('.nav-btn')) b.addEventListener('click', () => UI.setTab(b.dataset.tab));
 
     scene.on('number', (p, v, kind, color) => UI.number(p, v, kind, color));
@@ -20294,6 +20294,261 @@ small { font-size: var(--fs-xs); }
     },
   });
   if (typeof document !== 'undefined') { if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => TT.install()); else TT.install(); }
+})(typeof window !== 'undefined' ? window : globalThis);
+</script>
+<script>
+/* Arcane Forge: Magefall — the Conclave look from the owner's "Found a Conclave" mock-up (Oct 2026): painted
+   metallic emblems (gold with ink outline, bevel light and colour accents), a hanging cloth banner on a gold rod with
+   finials, trim and tassels in the Conclave colour, and the found / edit sheet in the mock-up's style (ornate gold
+   preview card, Cinzel lettering, gold-rimmed emblem tiles, ringed colour swatches). Logic is untouched: MF.conclave
+   keeps its data; only MF.conclave.banner and the CSS change. */
+(function (root) {
+  'use strict';
+  const MF = (root.MF = root.MF || {});
+  const TAU = Math.PI * 2, N = 192;
+  const INK = '#24130a';
+
+  // ------------------------------------------------------------------ painting helpers (192 px square)
+  const lin = (x, x0, y0, x1, y1, stops) => { const g = x.createLinearGradient(x0, y0, x1, y1); for (const [o, c] of stops) g.addColorStop(o, c); return g; };
+  const rad = (x, cx, cy, r0, r1, stops, ox, oy) => { const g = x.createRadialGradient(ox == null ? cx : ox, oy == null ? cy : oy, r0, cx, cy, r1); for (const [o, c] of stops) g.addColorStop(o, c); return g; };
+  const GOLD = (x, y0 = 20, y1 = 172) => lin(x, 0, y0, 0, y1, [[0, '#fff6d0'], [0.22, '#ffd96a'], [0.55, '#e0a434'], [0.8, '#a8661c'], [1, '#d89a3c']]);
+  /** Fill a path with an ink outline, then a soft inner highlight on its upper edge (metal bevel). */
+  function metal(x, path, fill, line = 7) {
+    x.save();
+    x.beginPath(); path(); x.lineJoin = 'round'; x.lineCap = 'round';
+    x.lineWidth = line * 2; x.strokeStyle = INK; x.stroke();
+    x.fillStyle = fill; x.fill();
+    x.clip();
+    x.beginPath(); path(); x.lineWidth = 6; x.strokeStyle = 'rgba(255,248,214,0.55)'; x.translate(0, 3); x.stroke(); // top bevel light
+    x.translate(0, -7); x.beginPath(); path(); x.lineWidth = 7; x.strokeStyle = 'rgba(90,44,6,0.35)'; x.stroke(); // lower shade
+    x.restore();
+  }
+  const glint = (x, cx, cy, r, a = 0.9) => { x.save(); x.globalCompositeOperation = 'lighter'; x.fillStyle = rad(x, cx, cy, 0, r, [[0, `rgba(255,255,240,${a})`], [1, 'rgba(255,255,240,0)']]); x.beginPath(); x.arc(cx, cy, r, 0, TAU); x.fill(); x.restore(); };
+  const spark = (x, cx, cy, r) => { x.save(); x.fillStyle = '#fffbe8'; x.beginPath(); for (let i = 0; i < 8; i++) { const a = (i / 8) * TAU, rr = i % 2 ? r * 0.22 : r; x.lineTo(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr); } x.closePath(); x.fill(); x.restore(); };
+  const gem = (x, cx, cy, r, c0, c1) => {
+    x.save();
+    x.beginPath(); x.arc(cx, cy, r + 3, 0, TAU); x.fillStyle = INK; x.fill();
+    x.beginPath(); x.arc(cx, cy, r, 0, TAU); x.fillStyle = rad(x, cx, cy, 0, r, [[0, c0], [1, c1]], cx - r * 0.35, cy - r * 0.4); x.fill();
+    x.restore(); glint(x, cx - r * 0.35, cy - r * 0.4, r * 0.55);
+  };
+  const facets = (x, path, cx, cy, n, a0 = 0) => { // alternate light / dark wedges from the centre for a cut-metal look
+    x.save(); x.beginPath(); path(); x.clip();
+    for (let i = 0; i < n; i++) {
+      const a = a0 + (i / n) * TAU, b = a0 + ((i + 1) / n) * TAU;
+      x.beginPath(); x.moveTo(cx, cy); x.lineTo(cx + Math.cos(a) * 200, cy + Math.sin(a) * 200); x.lineTo(cx + Math.cos(b) * 200, cy + Math.sin(b) * 200); x.closePath();
+      x.fillStyle = i % 2 ? 'rgba(120,64,8,0.28)' : 'rgba(255,250,220,0.22)'; x.fill();
+    }
+    x.restore();
+  };
+
+  // ------------------------------------------------------------------ the twelve emblems (MF.conclave.EMBLEMS order)
+  const EM = {
+    dragon(x) { // a dragon's head in profile, facing left, horns swept back
+      const P = () => {
+        x.moveTo(22, 104); x.bezierCurveTo(30, 92, 46, 86, 62, 84); x.lineTo(54, 72); x.bezierCurveTo(70, 62, 86, 54, 96, 50);
+        x.lineTo(100, 26); x.lineTo(112, 46); x.bezierCurveTo(124, 40, 138, 30, 158, 18); x.bezierCurveTo(150, 36, 140, 48, 132, 56);
+        x.bezierCurveTo(150, 60, 166, 74, 172, 96); x.bezierCurveTo(176, 118, 170, 146, 152, 172); x.lineTo(132, 150); x.bezierCurveTo(126, 140, 116, 132, 104, 128);
+        x.lineTo(88, 132); x.lineTo(74, 124); x.lineTo(58, 126); x.lineTo(40, 120); x.bezierCurveTo(30, 118, 22, 112, 22, 104); x.closePath();
+      };
+      metal(x, P, GOLD(x, 18, 172));
+      x.save(); x.strokeStyle = INK; x.lineWidth = 5; x.lineCap = 'round';
+      x.beginPath(); x.moveTo(40, 106); x.bezierCurveTo(60, 104, 80, 106, 100, 112); x.stroke(); // mouth
+      x.beginPath(); x.moveTo(118, 70); x.bezierCurveTo(130, 84, 136, 104, 134, 126); x.stroke(); // cheek
+      for (const [a, b] of [[146, 84], [152, 104], [150, 126]]) { x.beginPath(); x.moveTo(a, b); x.lineTo(a + 12, b + 4); x.stroke(); } // neck scales
+      x.restore();
+      x.save(); x.beginPath(); x.ellipse(98, 78, 11, 7, -0.25, 0, TAU); x.fillStyle = INK; x.fill(); x.beginPath(); x.ellipse(98, 78, 7, 4.5, -0.25, 0, TAU); x.fillStyle = '#ff6a2a'; x.fill(); x.fillStyle = INK; x.fillRect(97, 73, 2.5, 10); x.restore();
+      x.save(); x.fillStyle = '#fff6dc'; for (const tx of [44, 60, 76]) { x.beginPath(); x.moveTo(tx, 105); x.lineTo(tx + 5, 115); x.lineTo(tx + 9, 105); x.fill(); } x.restore();
+      glint(x, 120, 46, 12);
+    },
+    tower(x) { // a castle keep with battlements, arrow slits and a door
+      const P = () => {
+        x.moveTo(50, 176); x.lineTo(58, 70); x.lineTo(46, 70); x.lineTo(46, 36); x.lineTo(64, 36); x.lineTo(64, 50); x.lineTo(82, 50); x.lineTo(82, 36);
+        x.lineTo(110, 36); x.lineTo(110, 50); x.lineTo(128, 50); x.lineTo(128, 36); x.lineTo(146, 36); x.lineTo(146, 70); x.lineTo(134, 70); x.lineTo(142, 176); x.closePath();
+      };
+      metal(x, P, GOLD(x, 30, 176));
+      x.save(); x.strokeStyle = 'rgba(90,48,8,0.45)'; x.lineWidth = 3;
+      for (const y of [92, 116, 140, 162]) { x.beginPath(); x.moveTo(58, y); x.lineTo(136, y); x.stroke(); }
+      x.fillStyle = INK; x.beginPath(); x.moveTo(80, 176); x.lineTo(80, 146); x.arc(96, 146, 16, Math.PI, 0); x.lineTo(112, 176); x.fill();
+      x.fillStyle = '#5a2db0'; for (const wx of [74, 112]) { x.beginPath(); x.moveTo(wx, 108); x.lineTo(wx, 92); x.arc(wx + 5, 92, 5, Math.PI, 0); x.lineTo(wx + 10, 108); x.fill(); }
+      x.restore();
+      x.save(); x.fillStyle = '#c8333a'; x.strokeStyle = INK; x.lineWidth = 3; x.beginPath(); x.moveTo(96, 36); x.lineTo(96, 8); x.stroke(); x.beginPath(); x.moveTo(97, 8); x.lineTo(122, 15); x.lineTo(97, 22); x.closePath(); x.fill(); x.stroke(); x.restore();
+      glint(x, 70, 44, 10);
+    },
+    star(x) {
+      const P = () => { for (let i = 0; i < 10; i++) { const a = (i / 10) * TAU - Math.PI / 2, r = i % 2 ? 34 : 80; x.lineTo(96 + Math.cos(a) * r, 102 + Math.sin(a) * r); } x.closePath(); };
+      metal(x, P, GOLD(x, 20, 180)); facets(x, P, 96, 102, 10, -Math.PI / 2);
+      spark(x, 150, 40, 14); glint(x, 82, 72, 14);
+    },
+    moon(x) {
+      const P = () => { x.arc(88, 96, 72, 0.55, TAU - 0.55, false); x.arc(124, 82, 58, TAU - 1.05, 1.05, true); x.closePath(); };
+      metal(x, P, rad(x, 70, 70, 4, 120, [[0, '#fff6d0'], [0.45, '#ffd25a'], [0.85, '#b06e1e'], [1, '#e0a440']]));
+      x.save(); x.fillStyle = 'rgba(120,64,8,0.3)'; for (const [cx, cy, r] of [[48, 110, 9], [64, 70, 6], [58, 140, 7]]) { x.beginPath(); x.arc(cx, cy, r, 0, TAU); x.fill(); } x.restore();
+      spark(x, 150, 136, 12); spark(x, 166, 56, 9); glint(x, 50, 64, 12);
+    },
+    skull(x) {
+      const P = () => { x.moveTo(36, 92); x.bezierCurveTo(30, 24, 162, 24, 156, 92); x.bezierCurveTo(156, 114, 142, 124, 136, 128); x.lineTo(136, 160); x.lineTo(56, 160); x.lineTo(56, 128); x.bezierCurveTo(50, 124, 36, 114, 36, 92); x.closePath(); };
+      metal(x, P, rad(x, 80, 64, 6, 130, [[0, '#fffdf2'], [0.55, '#efe2c4'], [1, '#a8946c']]));
+      x.save(); x.fillStyle = INK; for (const cx of [72, 120]) { x.beginPath(); x.ellipse(cx, 96, 17, 20, 0, 0, TAU); x.fill(); }
+      x.beginPath(); x.moveTo(96, 112); x.lineTo(87, 130); x.lineTo(105, 130); x.closePath(); x.fill();
+      x.fillStyle = '#ff8a3a'; for (const cx of [72, 120]) { x.beginPath(); x.arc(cx, 99, 5, 0, TAU); x.fill(); }
+      x.strokeStyle = INK; x.lineWidth = 5; for (const cx of [78, 96, 114]) { x.beginPath(); x.moveTo(cx, 142); x.lineTo(cx, 160); x.stroke(); } x.restore();
+      glint(x, 74, 52, 14);
+    },
+    flame(x) {
+      const P = () => { x.moveTo(96, 14); x.bezierCurveTo(134, 56, 160, 84, 152, 126); x.bezierCurveTo(144, 166, 50, 172, 40, 128); x.bezierCurveTo(34, 96, 58, 82, 64, 52); x.bezierCurveTo(80, 70, 84, 84, 84, 96); x.bezierCurveTo(98, 70, 102, 44, 96, 14); x.closePath(); };
+      metal(x, P, lin(x, 0, 14, 0, 172, [[0, '#ffe9a0'], [0.4, '#ffb030'], [0.75, '#e05a14'], [1, '#a82e10']]));
+      const C = () => { x.moveTo(98, 84); x.bezierCurveTo(124, 110, 128, 132, 118, 148); x.bezierCurveTo(108, 164, 74, 162, 70, 140); x.bezierCurveTo(66, 120, 84, 116, 98, 84); x.closePath(); };
+      x.save(); x.beginPath(); C(); x.fillStyle = lin(x, 0, 84, 0, 160, [[0, '#fffbe0'], [0.6, '#ffe070'], [1, '#ffb030']]); x.fill(); x.restore();
+      glint(x, 96, 130, 22, 0.6);
+    },
+    eye(x) {
+      const P = () => { x.moveTo(12, 96); x.bezierCurveTo(52, 34, 140, 34, 180, 96); x.bezierCurveTo(140, 158, 52, 158, 12, 96); x.closePath(); };
+      metal(x, P, GOLD(x, 40, 156));
+      x.save(); x.beginPath(); x.moveTo(34, 96); x.bezierCurveTo(64, 56, 128, 56, 158, 96); x.bezierCurveTo(128, 136, 64, 136, 34, 96); x.closePath(); x.fillStyle = '#fbf3e4'; x.fill(); x.lineWidth = 4; x.strokeStyle = INK; x.stroke(); x.clip();
+      x.beginPath(); x.arc(96, 96, 32, 0, TAU); x.fillStyle = rad(x, 96, 96, 4, 32, [[0, '#e0b4ff'], [0.5, '#9c4dff'], [1, '#3a1470']]); x.fill(); x.lineWidth = 4; x.stroke();
+      x.beginPath(); x.ellipse(96, 96, 6, 18, 0, 0, TAU); x.fillStyle = INK; x.fill(); x.restore();
+      glint(x, 86, 84, 9); x.save(); x.strokeStyle = INK; x.lineWidth = 5; x.lineCap = 'round'; for (const [a, b, c, d] of [[96, 34, 96, 18], [56, 44, 46, 30], [136, 44, 146, 30]]) { x.beginPath(); x.moveTo(a, b); x.lineTo(c, d); x.stroke(); } x.restore();
+    },
+    staves(x) { // two crossed wands, violet orbs at the tips
+      for (const s of [-1, 1]) {
+        x.save(); x.translate(96, 100); x.rotate(s * 0.72);
+        metal(x, () => { x.moveTo(-7, -62); x.lineTo(7, -62); x.lineTo(5, 78); x.lineTo(-5, 78); x.closePath(); }, lin(x, -8, 0, 8, 0, [[0, '#a8661c'], [0.4, '#ffe08a'], [1, '#a8661c']]), 5);
+        metal(x, () => { x.moveTo(-13, -60); x.lineTo(13, -60); x.lineTo(10, -50); x.lineTo(-10, -50); x.closePath(); }, GOLD(x, -62, -48), 4);
+        x.restore();
+      }
+      for (const s of [-1, 1]) gem(x, 96 + 70 * Math.sin(s * 0.72), 100 - 70 * Math.cos(0.72), 15, '#f2d4ff', '#6a20c0'); // orbs at the tips
+      spark(x, 96, 40, 10);
+    },
+    rune(x) { // a long cut crystal
+      const P = () => { x.moveTo(96, 8); x.lineTo(138, 70); x.lineTo(118, 178); x.lineTo(74, 178); x.lineTo(54, 70); x.closePath(); };
+      metal(x, P, GOLD(x, 8, 180));
+      x.save(); x.beginPath(); P(); x.clip(); x.fillStyle = 'rgba(255,250,220,0.35)'; x.beginPath(); x.moveTo(96, 8); x.lineTo(96, 178); x.lineTo(74, 178); x.lineTo(54, 70); x.closePath(); x.fill();
+      x.fillStyle = 'rgba(120,64,8,0.25)'; x.beginPath(); x.moveTo(54, 70); x.lineTo(138, 70); x.lineTo(96, 96); x.closePath(); x.fill();
+      x.strokeStyle = 'rgba(70,34,4,0.55)'; x.lineWidth = 3; x.beginPath(); x.moveTo(96, 8); x.lineTo(96, 178); x.moveTo(54, 70); x.lineTo(96, 96); x.lineTo(138, 70); x.stroke(); x.restore();
+      glint(x, 84, 52, 12); spark(x, 152, 38, 11);
+    },
+    phoenix(x) { // a firebird: wings spread wide with feathered edges, a fanned tail, head raised
+      const pts = [[84, 66], null, [14, 28], [38, 54], [30, 64], [52, 72], [46, 84], [68, 88], [80, 104], [72, 148], [58, 176], [84, 160], [96, 184], [108, 160], [134, 176], [120, 148], [112, 104], [124, 88], [146, 84], [140, 72], [162, 64], [154, 54], [178, 28]];
+      const P = () => {
+        x.moveTo(84, 66); x.bezierCurveTo(60, 40, 34, 22, 14, 28);
+        for (const q of pts.slice(3)) x.lineTo(q[0], q[1]);
+        x.bezierCurveTo(158, 22, 132, 40, 108, 66); x.closePath();
+      };
+      metal(x, P, GOLD(x, 20, 184));
+      x.save(); x.beginPath(); P(); x.clip(); x.strokeStyle = 'rgba(90,48,8,0.5)'; x.lineWidth = 3; x.lineCap = 'round';
+      for (const [ex, ey] of [[30, 64], [46, 84], [62, 82]]) { x.beginPath(); x.moveTo(82, 74); x.lineTo(ex + 8, ey - 6); x.stroke(); x.beginPath(); x.moveTo(110, 74); x.lineTo(192 - ex - 8, ey - 6); x.stroke(); }
+      for (const tx of [84, 96, 108]) { x.beginPath(); x.moveTo(96, 120); x.lineTo(tx, 168); x.stroke(); }
+      x.restore();
+      metal(x, () => { x.arc(96, 54, 17, 0, TAU); }, GOLD(x, 36, 72), 5);
+      x.save(); x.fillStyle = '#e07a1c'; x.strokeStyle = INK; x.lineWidth = 3; x.beginPath(); x.moveTo(90, 62); x.lineTo(96, 80); x.lineTo(102, 62); x.closePath(); x.fill(); x.stroke();
+      x.fillStyle = '#c8333a'; for (const ex of [90, 102]) { x.beginPath(); x.arc(ex, 52, 3.5, 0, TAU); x.fill(); } x.restore();
+      x.save(); x.fillStyle = '#ffb030'; x.strokeStyle = INK; x.lineWidth = 3; x.beginPath(); x.moveTo(88, 40); x.quadraticCurveTo(86, 22, 96, 14); x.quadraticCurveTo(100, 28, 104, 40); x.closePath(); x.fill(); x.stroke(); x.restore(); // crest
+      glint(x, 52, 44, 10);
+    },
+    crown(x) {
+      const P = () => { x.moveTo(26, 146); x.lineTo(16, 56); x.lineTo(60, 96); x.lineTo(96, 34); x.lineTo(132, 96); x.lineTo(176, 56); x.lineTo(166, 146); x.closePath(); };
+      metal(x, P, GOLD(x, 34, 150));
+      metal(x, () => { x.rect(24, 140, 144, 26); }, GOLD(x, 140, 166), 5);
+      gem(x, 96, 120, 12, '#ffc0c8', '#b01a30'); gem(x, 56, 128, 8, '#c0e4ff', '#1a5ab0'); gem(x, 136, 128, 8, '#c0e4ff', '#1a5ab0');
+      for (const [cx, cy] of [[16, 56], [96, 30], [176, 56]]) gem(x, cx, cy, 9, '#fff6d0', '#d09020');
+      x.save(); x.fillStyle = '#b01a30'; for (const gx of [48, 96, 144]) { x.beginPath(); x.arc(gx, 153, 5, 0, TAU); x.fill(); } x.restore();
+    },
+    potion(x) {
+      const P = () => { x.moveTo(80, 30); x.lineTo(112, 30); x.lineTo(112, 64); x.bezierCurveTo(150, 74, 168, 112, 152, 146); x.bezierCurveTo(138, 176, 54, 176, 40, 146); x.bezierCurveTo(24, 112, 42, 74, 80, 64); x.closePath(); };
+      metal(x, P, rad(x, 80, 100, 4, 90, [[0, '#fffaf0'], [1, '#d8c8b0']]), 6);
+      x.save(); x.beginPath(); P(); x.clip(); x.fillStyle = lin(x, 0, 100, 0, 176, [[0, '#ffd25a'], [0.6, '#e0901c'], [1, '#9a4e0c']]); x.beginPath(); x.moveTo(20, 108); x.bezierCurveTo(70, 96, 120, 120, 180, 104); x.lineTo(180, 190); x.lineTo(20, 190); x.fill();
+      x.fillStyle = 'rgba(255,255,220,0.8)'; for (const [bx, by, br] of [[76, 132, 6], [108, 146, 4], [92, 120, 3]]) { x.beginPath(); x.arc(bx, by, br, 0, TAU); x.fill(); } x.restore();
+      metal(x, () => { x.rect(74, 16, 44, 20); }, lin(x, 0, 16, 0, 36, [[0, '#c87a44'], [1, '#6a3414']]), 5);
+      metal(x, () => { x.rect(70, 58, 52, 10); }, GOLD(x, 58, 68), 4);
+      glint(x, 66, 96, 16, 0.8);
+    },
+  };
+
+  // ------------------------------------------------------------------ banner: cloth on a gold rod (per emblem + colour)
+  const shade = (hex, k) => { const n = parseInt(String(hex).replace('#', ''), 16), f = (v) => Math.max(0, Math.min(255, Math.round(k < 0 ? v * (1 + k) : v + (255 - v) * k))); return `rgb(${f(n >> 16)},${f((n >> 8) & 255)},${f(n & 255)})`; };
+  function drawBanner(x, W, H, emblem, color) {
+    const s = W / 120; x.save(); x.scale(s, s); // design space 120 x 160
+    const cloth = () => { x.moveTo(20, 18); x.lineTo(100, 18); x.lineTo(100, 128); x.lineTo(60, 150); x.lineTo(20, 128); x.closePath(); };
+    // tassel cords behind the cloth
+    x.save(); x.strokeStyle = '#a8661c'; x.lineWidth = 2.4; for (const tx of [14, 106]) { x.beginPath(); x.moveTo(tx, 14); x.bezierCurveTo(tx, 50, tx + (tx < 60 ? -2 : 2), 80, tx, 104); x.stroke(); } x.restore();
+    for (const tx of [14, 106]) { x.save(); x.fillStyle = lin(x, 0, 100, 0, 124, [[0, '#ffe08a'], [1, '#a8661c']]); x.strokeStyle = INK; x.lineWidth = 1.6; x.beginPath(); x.moveTo(tx - 3, 104); x.lineTo(tx + 3, 104); x.lineTo(tx + 6, 124); x.lineTo(tx - 6, 124); x.closePath(); x.fill(); x.stroke(); x.beginPath(); x.arc(tx, 102, 4, 0, TAU); x.fill(); x.stroke(); x.restore(); }
+    // cloth with folds
+    x.save(); x.beginPath(); cloth(); x.lineWidth = 5; x.strokeStyle = INK; x.lineJoin = 'round'; x.stroke();
+    x.fillStyle = lin(x, 20, 0, 100, 0, [[0, shade(color, -0.35)], [0.22, shade(color, 0.12)], [0.5, color], [0.78, shade(color, 0.1)], [1, shade(color, -0.4)]]); x.fill(); x.clip();
+    x.fillStyle = 'rgba(0,0,0,0.18)'; x.fillRect(20, 18, 80, 8); // shadow under the rod
+    x.fillStyle = 'rgba(255,255,255,0.08)'; for (const fx of [38, 74]) x.fillRect(fx, 18, 6, 140);
+    x.restore();
+    // gold trim
+    x.save(); x.beginPath(); x.moveTo(26, 24); x.lineTo(94, 24); x.lineTo(94, 125); x.lineTo(60, 143); x.lineTo(26, 125); x.closePath(); x.lineWidth = 3; x.strokeStyle = lin(x, 0, 24, 0, 143, [[0, '#fff1b0'], [0.5, '#e0a434'], [1, '#a8661c']]); x.stroke(); x.restore();
+    // emblem
+    x.save(); x.translate(60 - 30, 50 - 30 + 6); x.scale(60 / N, 60 / N); x.shadowColor = 'rgba(0,0,0,0.45)'; x.shadowBlur = 6; x.shadowOffsetY = 2; (EM[emblem] || EM.star)(x); x.restore();
+    // rod with finials
+    x.save(); x.beginPath(); x.rect(6, 12, 108, 9); x.lineWidth = 3.5; x.strokeStyle = INK; x.stroke(); x.fillStyle = lin(x, 0, 12, 0, 21, [[0, '#fff1b0'], [0.5, '#e0a434'], [1, '#8a5014']]); x.fill(); x.restore();
+    for (const fx of [5, 115]) { x.save(); x.beginPath(); x.arc(fx, 16.5, 7, 0, TAU); x.lineWidth = 3; x.strokeStyle = INK; x.stroke(); x.fillStyle = rad(x, fx, 16.5, 1, 7, [[0, '#fff6d0'], [1, '#c08020']], fx - 2, 14); x.fill(); x.restore(); }
+    x.restore();
+  }
+
+  const cache = {};
+  const CS = (MF.ConclaveStyle = {
+    EM,
+    /** All twelve emblems as one strip (192 px cells), MF.conclave.EMBLEMS order. */
+    emblems() {
+      if (cache.strip) return cache.strip;
+      const names = (MF.conclave && MF.conclave.EMBLEMS) || Object.keys(EM);
+      const cv = document.createElement('canvas'); cv.width = N * names.length; cv.height = N; const x = cv.getContext('2d');
+      names.forEach((n, i) => { x.save(); x.translate(i * N, 0); (EM[n] || EM.star)(x); x.restore(); });
+      return (cache.strip = cv.toDataURL('image/png'));
+    },
+    banner(emblem, color) {
+      const key = emblem + color; if (cache[key]) return cache[key];
+      const cv = document.createElement('canvas'); cv.width = 180; cv.height = 240; drawBanner(cv.getContext('2d'), 180, 240, emblem, color);
+      return (cache[key] = cv.toDataURL('image/png'));
+    },
+    install() {
+      const V = MF.conclave; if (!V || V.__style || typeof document === 'undefined') return;
+      V.__style = true;
+      V.banner = (emblem, color, size = 'md') => `<span class="cv-banner cv-${size} cvb-art" style="--bc:${color}"><img src="${CS.banner(emblem, color)}" alt=""></span>`;
+      const n = V.EMBLEMS.length, E = CS.emblems();
+      const curl = (t) => `<g transform='${t}' fill='none' stroke-linecap='round'><path d='M3 30 V10 Q3 3 10 3 H30' stroke='%2324130a' stroke-width='4'/><path d='M3 30 V10 Q3 3 10 3 H30' stroke='%23e9b84a' stroke-width='2'/><path d='M9 22 Q9 9 22 9' stroke='%23e9b84a' stroke-width='1.3' opacity='.8'/><circle cx='9' cy='9' r='2.2' fill='%23ffe08a'/></g>`;
+      const corner = (t) => `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='34' height='34'>${curl(t)}</svg>")`;
+      const CORNERS = [corner(''), corner('translate(34 0) scale(-1 1)'), corner('translate(0 34) scale(1 -1)'), corner('translate(34 34) scale(-1 -1)')].join(',');
+      const st = document.createElement('style'); st.id = 'conclave-style-css';
+      st.textContent = `
+.cv-em.cv-em.cv-em.cv-em{background-image:url(${E})!important;background-size:${n * 100}% 100%!important;background-position:calc(var(--i) * ${100 / (n - 1)}%) 0!important;image-rendering:auto!important}
+/* banner: the painted cloth on its rod (no clipped pennant) */
+.cv-banner.cvb-art{clip-path:none!important;background:none!important;padding:0!important;display:block}
+.cv-banner.cvb-art::before,.cv-banner.cvb-art::after{display:none!important}
+.cv-banner.cvb-art img{display:block;width:100%;height:100%;object-fit:contain;filter:drop-shadow(0 2px 2px rgba(0,0,0,0.45))}
+.cv-banner.cvb-art.cv-sm{width:33px;height:44px}
+.cv-banner.cvb-art.cv-md{width:45px;height:60px}
+.cv-banner.cvb-art.cv-lg{width:78px;height:104px}
+/* the found / edit sheet, as in the mock-up */
+.cv-sheet .cv-prev{position:relative;gap:14px;padding:12px 14px;border:2px solid #c9952e;border-radius:10px;background:radial-gradient(circle at 18% 40%,#4a2c86 0,#2a1a52 55%,#1c1236 100%);box-shadow:inset 0 0 0 1px rgba(255,224,138,0.35),inset 0 0 18px rgba(0,0,0,0.45),0 2px 4px rgba(42,26,58,0.35)}
+.cv-sheet .cv-prev{background:${CORNERS},radial-gradient(circle at 18% 40%,#4a2c86 0,#2a1a52 55%,#1c1236 100%)!important;background-position:4px 4px,calc(100% - 4px) 4px,4px calc(100% - 4px),calc(100% - 4px) calc(100% - 4px),0 0!important;background-size:34px 34px,34px 34px,34px 34px,34px 34px,auto!important;background-repeat:no-repeat!important}
+.cv-card.cv-card,.cv-hero.cv-hero{position:relative;border:2px solid #c9952e;border-radius:10px;box-shadow:inset 0 0 0 1px rgba(255,224,138,0.35),inset 0 0 18px rgba(0,0,0,0.4),0 2px 4px rgba(42,26,58,0.35);background-repeat:no-repeat!important;background-position:4px 4px,calc(100% - 4px) 4px,4px calc(100% - 4px),calc(100% - 4px) calc(100% - 4px),0 0,0 0!important;background-size:34px 34px,34px 34px,34px 34px,34px 34px,auto,auto!important}
+.cv-card.cv-card{background-image:${CORNERS},radial-gradient(circle at 18% 45%,rgba(255,255,255,0.16),rgba(255,255,255,0) 55%),linear-gradient(135deg,var(--bc),#1e1830 140%)!important}
+.cv-hero.cv-hero{background-image:${CORNERS},radial-gradient(circle at 18% 40%,#4a2c86 0,#2a1a52 55%,#1c1236 100%),none!important}
+.cv-name.cv-name,.cv-hero.cv-hero b{font-family:'Cinzel',var(--font-title)!important;font-weight:800!important;letter-spacing:0.02em!important;text-shadow:0 2px 0 rgba(0,0,0,0.5)}
+.cv-name.cv-name{font-size:24px;line-height:1.1}
+.cv-sheet .cv-pinfo b{font-family:'Cinzel',var(--font-title)!important;font-weight:800!important;font-size:24px;letter-spacing:0.02em!important;color:#fff;text-shadow:0 2px 0 rgba(0,0,0,0.5)}
+.cv-sheet .cv-pinfo span{font-family:'Spectral',Georgia,serif;font-weight:600;font-size:15px;color:#d8c8f4}
+.cv-sheet .cv-lbl{font-family:'Cinzel',var(--font-title);font-weight:800;font-size:15px;letter-spacing:0.01em;color:#2a1a3a;margin-top:10px}
+.cv-sheet .cv-lbl small{font-family:var(--font-ui);font-weight:600}
+.cv-sheet .cv-in{border:2px solid #4a3a6a;border-radius:8px;background:#fffdf8;box-shadow:inset 0 1px 2px rgba(42,26,58,0.15)}
+.cv-sheet .cv-in:focus{border-color:#7a4ad0}
+.cv-sheet .cv-ems{gap:7px}
+.cv-sheet .cv-pick{height:auto;aspect-ratio:1;padding:4px;border:1.5px solid #b98a2e;border-radius:7px;background:radial-gradient(circle at 50% 40%,#4a3472 0,#2c1f4c 70%,#22183c 100%);box-shadow:inset 0 0 0 1px rgba(255,224,138,0.18),0 1px 2px rgba(0,0,0,0.35)}
+.cv-sheet .cv-pick .cv-em{width:100%;height:100%;filter:drop-shadow(0 1px 1px rgba(0,0,0,0.5))}
+.cv-sheet .cv-pick.sel{border-color:#ffd25a;box-shadow:0 0 0 2px #f5c542,0 0 10px rgba(245,197,66,0.8),inset 0 0 10px rgba(255,210,90,0.25)}
+.cv-sheet .cv-cols{gap:6px}
+.cv-sheet .cv-col{border:2px solid #2a1a3a;box-shadow:inset 0 2px 3px rgba(255,255,255,0.3),inset 0 -3px 4px rgba(0,0,0,0.3)}
+.cv-sheet .cv-col.sel{border-color:#ffd25a;box-shadow:0 0 0 2px #2a1a3a,0 0 0 4px #f5c542,0 0 10px rgba(245,197,66,0.7)}
+.cv-sheet .cv-go{height:52px;border-radius:10px}
+.cv-sheet .cv-go b{font-family:'Cinzel',var(--font-title)!important;font-weight:900!important;font-size:22px;letter-spacing:0.01em!important;color:#1e1430}`;
+      document.head.appendChild(st);
+    },
+  });
+  if (typeof document !== 'undefined') { if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => CS.install()); else CS.install(); }
 })(typeof window !== 'undefined' ? window : globalThis);
 </script>
 </body></html>
