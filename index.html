@@ -21204,12 +21204,14 @@ small { font-size: var(--fs-xs); }
       }
     };
     const box = () => app.getBoundingClientRect();
+    let targetTop = 0; // top of the spotlit target (app px)
     /** Spotlight on the target; returns which half the wizard should stand in. */
     const spot = () => {
       const st = STEPS[i], B = box(), t = st.sel && document.querySelector(st.sel);
       if (t) {
         const r = t.getBoundingClientRect(), pad = 6;
         Object.assign(mask.style, { left: `${r.left - B.left - pad}px`, top: `${r.top - B.top - pad}px`, width: `${r.width + pad * 2}px`, height: `${r.height + pad * 2}px`, borderRadius: '10px' });
+        targetTop = r.top - B.top - pad;
         return r.top - B.top + r.height / 2 < B.height / 2 ? 'bottom' : 'top';
       }
       Object.assign(mask.style, { left: `${B.width / 2}px`, top: `${B.height * 0.42}px`, width: '0px', height: '0px', borderRadius: '50%' });
@@ -21221,6 +21223,10 @@ small { font-size: var(--fs-xs); }
       const w = Math.round(Math.max(118, Math.min(212, B.width * 0.38, (B.height * 0.42) / ASPECT)));
       stage.style.setProperty('--ww', `${w}px`); stage.style.setProperty('--wh', `${Math.round(w * ASPECT)}px`);
       stage.classList.toggle('top', where === 'top'); stage.classList.toggle('bottom', where !== 'top');
+      // owner: when he stands above the target, bring him down towards the middle of the screen (just clear of the
+      // spotlight, never below 56% of the screen) instead of up against the top bar
+      const wh = Math.round(w * ASPECT);
+      stage.style.top = where === 'top' ? `${Math.max(8, Math.min(targetTop - 14, B.height * 0.56) - wh)}px` : '';
     };
     const appear = (first) => {
       wiz.classList.remove('gone', 'enter'); void wiz.offsetWidth; wiz.classList.add('enter');
@@ -21315,7 +21321,8 @@ small { font-size: var(--fs-xs); }
   const CSS = `
 .tw .tw-stage{position:absolute;left:8px;right:8px;display:flex;align-items:flex-end;gap:0;pointer-events:none;z-index:2}
 .tw .tw-stage.bottom{bottom:calc(var(--nav-h,64px) * 0 + 8px + env(safe-area-inset-bottom,0px))}
-.tw .tw-stage.top{top:calc(8px + env(safe-area-inset-top,0px));align-items:flex-start}
+.tw .tw-stage.top{top:calc(8px + env(safe-area-inset-top,0px));align-items:flex-start;justify-content:center}
+.tw .tw-stage.top .tw-bub{flex:0 1 250px}
 .tw .tw-wiz{position:relative;flex:none;width:var(--ww);height:var(--wh);transform-origin:50% 100%;opacity:0}
 .tw .tw-wiz.enter{opacity:1;animation:twIn .7s cubic-bezier(.34,1.56,.64,1) both}
 .tw .tw-wiz.gone{opacity:0;transform:scale(.6) translateY(12%);transition:opacity .2s ease,transform .22s ease}
