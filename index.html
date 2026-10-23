@@ -1796,8 +1796,8 @@ small { font-size: var(--fs-xs); }
   const MF = (root.MF = root.MF || {});
 
   MF.BACKEND = {
-    url: '', // e.g. 'https://abcdefghijklmno.supabase.co'
-    anonKey: '', // the project's anon (public) key
+    url: "https://hdyvfjzwjxkpipcjuwzo.supabase.co",
+    anonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhkeXZmanp3anhrcGlwY2p1d3pvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI3NDg3NTMsImV4cCI6MjEwODMyNDc1M30.NgSnx_TUHMaCeD7v81jUS9_jzRoEqMm_afvluYWhrdM",
     // client pacing; the server enforces its own limits (see supabase/schema.sql)
     scoreEveryMs: 45000, // submit power at most this often...
     scoreMinGain: 0.05, // ...and only after a 5% power change or a new best stage
@@ -18662,6 +18662,10 @@ small { font-size: var(--fs-xs); }
     game = g;
     if (!O.configured()) return;
     api = MF.supa(cfg());
+    api.select('banned_words', 'select=word,kind').then((r) => {
+      if (!r.ok || !Array.isArray(r.data)) return;
+      for (const w of r.data) { const list = MF.PROFANITY[w.kind === 'strong' ? 'strong' : 'words']; if (w.word && !list.includes(w.word)) list.push(w.word); }
+    });
     api.onToken = (t) => { if (chat.sub) chat.sub.token(t); };
     // players with a name are on the leaderboard: keep their power fresh
     setInterval(() => { O.submitScore(false); }, 15000);
