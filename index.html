@@ -15416,7 +15416,7 @@ small { font-size: var(--fs-xs); }
    - Each tap: "+0.7%" rises off him, a gold ring and sparks burst from his chest, he flexes for a moment (hd-actors reads
      `scene.tapPulse`), a soft tick sound and a tiny vibration where the phone allows it.
    - While boosted: a gentle gold glow around him and the total ("+4.9%") over his head.
-   - When a boss fight starts: a short note over him, "Tap your wizard to gain power", with a pulsing ring on him. */
+   - When a boss fight starts: a short note over him, "Tap anywhere to power up your wizard", with a pulsing ring on him. */
 (function (root) {
   'use strict';
   const MF = (root.MF = root.MF || {});
@@ -15448,9 +15448,12 @@ small { font-size: var(--fs-xs); }
     },
     onPointer(ev) {
       const sc = MF.debugScene; if (!sc || !TP.active()) return;
-      const cv = document.getElementById('battle'), r = cv.getBoundingClientRect();
-      const x = ev.clientX - r.left, y = ev.clientY - r.top, B = TP.box(sc);
-      if (x >= B.x0 && x <= B.x1 && y >= B.y0 && y <= B.y1) { TP.tap(sc); if (ev.cancelable) ev.preventDefault(); }
+      // owner: a tap anywhere on the screen counts in a boss fight, except on buttons, fields, open windows and
+      // full-screen tabs (those keep their own job: a spell button still casts, the bottom bar still switches tabs)
+      const t = ev.target;
+      if (t && t.closest && t.closest('button, a, input, textarea, select, label, [role="button"], .sheet, #sheet-layer > *, #ft, .tut, #nav')) return;
+      if (document.querySelector('.app.tab-full') || (MF.sheets && MF.sheets.isOpen && MF.sheets.isOpen())) return;
+      TP.tap(sc);
     },
     update(sc, dt) {
       if (sc.tapPulse > 0) sc.tapPulse = Math.max(0, sc.tapPulse - dt * 4.5);
@@ -15464,7 +15467,7 @@ small { font-size: var(--fs-xs); }
     },
     showHint(sc) {
       let el = document.getElementById('tap-hint');
-      if (!el) { el = document.createElement('div'); el.id = 'tap-hint'; el.innerHTML = '<span class="th-hand"></span>Tap your wizard to gain power'; document.getElementById('scene-ui').appendChild(el); }
+      if (!el) { el = document.createElement('div'); el.id = 'tap-hint'; el.innerHTML = '<span class="th-hand"></span>Tap anywhere to power up your wizard'; document.getElementById('scene-ui').appendChild(el); }
       sc.tapHint = { t: 0 }; TP.placeHint(sc); el.classList.remove('off'); el.hidden = false; void el.offsetWidth; el.classList.add('on');
     },
     hideHint(sc) { sc.tapHint = null; const el = document.getElementById('tap-hint'); if (el) { el.classList.remove('on'); el.classList.add('off'); } },
@@ -15535,7 +15538,7 @@ small { font-size: var(--fs-xs); }
           return r;
         };
       }
-      const hook = () => { const cv = document.getElementById('battle'); if (!cv) return setTimeout(hook, 200); TP.css(); cv.addEventListener('pointerdown', TP.onPointer); };
+      const hook = () => { const cv = document.getElementById('battle'); if (!cv) return setTimeout(hook, 200); TP.css(); document.addEventListener('pointerdown', TP.onPointer, true); };
       if (typeof document !== 'undefined') { if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', hook); else hook(); }
     },
   });
