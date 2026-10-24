@@ -10333,6 +10333,7 @@ small { font-size: var(--fs-xs); }
   // gliding down to a soft landing. Galaxy Ascension still rises clearly above it.
   const GALAXY_H = 58, HOVER_H = 40, HOVER_UP = 0.85, HOVER_HOLD = 2.85, HOVER_DOWN = 0.9, HOVER_EVERY = 8.2;
   const HOVER_FOR = HOVER_UP + HOVER_HOLD + HOVER_DOWN;
+  const SPIN_AT = HOVER_UP - 0.05, SPIN_FOR = 0.7; // the somersault at the top of the rise
 
   const FX = (MF.SpellFX = {
     // palettes in the renderer's SPELL_PAL shape, for the staff charge and the impact sparks
@@ -10413,6 +10414,20 @@ small { font-size: var(--fs-xs); }
       const sm = (k) => (k <= 0 ? 0 : k >= 1 ? 1 : k * k * (3 - 2 * k));
       const up = ease(L.t / 0.3), down = sm((L.dur - L.t) / 0.5); // a soft half-second landing
       return Math.min(up, down) * GALAXY_H + (sc.reduced ? 0 : Math.sin(L.t * 5) * 1.2 * Math.min(up, down));
+    },
+    /** The mid-air somersault (owner: "a quick 360 up in the air before the attacks", "super smooth and fluid"): as he
+        reaches the top of each idle hover he turns one full backward circle in 0.7 s, easing in and out (angle in
+        radians, 0 the rest of the time; none in reduced motion, while walking or in the Welcome back scene). */
+    spin(sc) {
+      if (sc.reduced || sc.noHover) return 0;
+      const T = sc.hoverT || 0, p = T % HOVER_EVERY, u = (p - SPIN_AT) / SPIN_FOR, cyc = Math.floor(T / HOVER_EVERY);
+      if (u <= 0 || u >= 1) return 0;
+      // decided once, as the turn begins (only if he is really up); a turn that has begun always finishes smoothly,
+      // even if a new wave starts during it (no snap back to upright)
+      if (sc.spinCyc !== cyc) { sc.spinCyc = cyc; sc.spinOn = FX.hoverK(sc) > 0.5; }
+      if (!sc.spinOn) return 0;
+      const e = u * u * u * (u * (u * 6 - 15) + 10); // smootherstep: starts and ends at rest
+      return -Math.PI * 2 * e;
     },
     /** The idle hover's height (internal px) for hover strength k: the rise floats up with a gentle 6% overshoot that
         settles, and aloft he drifts on two slow, unequal waves (a believable bob, never a fixed rhythm). */
@@ -11023,7 +11038,7 @@ small { font-size: var(--fs-xs); }
       if (prev) { this.wizard.play(prev.name === 'victory' ? 'victory' : 'idle'); this.burst(this.wx() + 0, this.ground - 26, this.pal().glow, 14, 30); }
     }
 
-    wx() { return 74 + (this.wizOff || 0); } // a little room behind the wizard for the companion
+    wx() { return 74 + (this.formShift || 0) + (this.wizOff || 0); } // a little room behind the wizard for the companion
     /** Companion celebration: a happy hop and a ring of sparkles in its rarity colour. */
     cheer(key) {
       this.compCel = 1;
@@ -11747,7 +11762,7 @@ small { font-size: var(--fs-xs); }
         const underHud = this.hudR > this.hudL && bx + w > this.hudL / this.scale && bx < this.hudR / this.scale;
         this.bar(bx, Math.max(underHud ? hb : 2, top), w, 3, d.hp, d.max, d.chip, d.kind === 'elite' ? '#F5C542' : d.kind === 'monster' ? '#FF8A3A' : '#E5484D');
       }
-      this.bar(wx - 13, gy - 66 - (MF.SpellFX ? MF.SpellFX.lift(this) : 0) - (this.hdWiz ? 16 : 0), 26, 3, this.hp.v, this.hp.max, this.hp.chip, '#5FE08A');
+      this.bar(wx - 13, gy - 66 - (MF.SpellFX ? MF.SpellFX.lift(this) : 0) - (this.hdWiz ? 16 : 0) - ((this.wizScale || 1) - 1) * 78, 26, 3, this.hp.v, this.hp.max, this.hp.chip, '#5FE08A');
       if (this.boss && !this.boss.gone) {
         const d = this.boss;
         // top centre, in the gap between the corner chips (idle on the left, chat on the right)
@@ -13445,7 +13460,12 @@ small { font-size: var(--fs-xs); }
     /** Where the wizard's open palm is right now (internal px): spells leave from here. */
     palm(sc) {
       const S = sc.hdWizState, r = H.wizRig();
-      if (S && S.W && S.place) { const q = r.point(S.W, 'palm'); return { x: S.place.x0 + S.place.k * q.x, y: S.place.y0 + S.place.k * q.y }; }
+      if (S && S.W && S.place) {
+        const q = r.point(S.W, 'palm'), px = S.place.x0 + S.place.k * q.x, py = S.place.y0 + S.place.k * q.y, sp = S.spin;
+        if (!sp) return { x: px, y: py };
+        const c = Math.cos(sp.a), s = Math.sin(sp.a), dx = px - sp.cx, dy = py - sp.cy; // spells leave the turning hand
+        return { x: sp.cx + dx * c - dy * s, y: sp.cy + dx * s + dy * c };
+      }
       const lift = MF.SpellFX ? MF.SpellFX.lift(sc) : 0, k = WIZ_H / 420;
       return { x: sc.wx() + (347 - 210) * k, y: sc.ground - lift - (420 - 179) * k };
     },
@@ -13457,10 +13477,15 @@ small { font-size: var(--fs-xs); }
       if (dt >= 1) snap(S); else settle(S.cur, S.vel, S.tgt, S.rates, dt);
       if (S.wk > 0.001) walkLegs(sc, rig, S, S.cur); // the planted feet follow the settled body exactly
       S.W = rig.solve(S.cur, S.W);
-      const k = WIZ_H / 420; S.place = { x0: wx - 210 * k, y0: feet - 420 * k + 1.6, k }; // +1.6: the boots sit into the ground, not on top of it
-      shadow(x, wx + 1, sc.ground, 14 * (1 - 0.4 * S.lv - 0.25 * (S.hv || 0)), 1 * (1 - 0.55 * S.lv - 0.45 * (S.hv || 0)));
+      // wizScale (tap-power.js): he grows a little with every tap in a boss fight, from the feet up (looks only)
+      const sz = sc.wizScale || 1, k = (WIZ_H / 420) * sz; S.place = { x0: wx - 210 * k, y0: feet - 420 * k + 1.6, k }; // +1.6: the boots sit into the ground, not on top of it
+      shadow(x, wx + 1, sc.ground, 14 * sz * (1 - 0.4 * S.lv - 0.25 * (S.hv || 0)), 1 * (1 - 0.55 * S.lv - 0.45 * (S.hv || 0)));
       airFX(sc, x, S, wx, feet, t, dt >= 1 ? 0 : dt);
       const hat = H.gearTier(sc, 'hat'), tier = hat >= 0 ? hat : clamp(sc.wizTier | 0, 0, 9), red = sc.reduced; // the hat's rarity crowns the head
+      // the mid-air somersault (spells-extra.js SpellFX.spin): the whole figure turns about his middle
+      const ang = MF.SpellFX && MF.SpellFX.spin ? MF.SpellFX.spin(sc) : 0;
+      S.spin = ang ? { a: ang, cx: wx, cy: feet - 230 * k } : null;
+      if (S.spin) { x.save(); x.translate(S.spin.cx, S.spin.cy); x.rotate(ang); x.translate(-S.spin.cx, -S.spin.cy); }
       headFX(x, rig, S, tier, t, red, 'back');
       H.gearFX(sc, x, rig, S, t, red, 'back');
       x.globalCompositeOperation = 'source-over'; x.globalAlpha = 1;
@@ -13468,6 +13493,7 @@ small { font-size: var(--fs-xs); }
       MF.Rig.draw(x, rig, S.key, S.W, S.place, sc.dev, { flash: S.flash });
       headFX(x, rig, S, tier, t, red, 'front');
       H.gearFX(sc, x, rig, S, t, red, 'front');
+      if (S.spin) x.restore();
       const w = sc.wizard;
       if (w && w.name === 'cast') { // magic gathering in the palm as it thrusts
         const pp = H.palm(sc), e = Math.sin(progress(w, MF.ATLAS.wizard.anims) * Math.PI);
@@ -13900,6 +13926,7 @@ small { font-size: var(--fs-xs); }
   const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
   const RIG = { newt: 'wyvern' }; // companions sharing a rig
   const BACK = 52;                // the companion's centre, internal px behind the wizard
+  const WX0 = 74;                 // the wizard's spot without a companion (build.js Scene.wx)
   const H = { slime: 26, tome: 28, astral: 34, newt: 30, fox: 30, kitsune: 32 }; // on-screen height, internal px (wizard 62)
 
   /** Per-rig pose. P = blank rig pose, S = { t, w: walk 0..1, cel: hop 0..1, ch: cheer 0..1, fly }. */
@@ -13978,7 +14005,7 @@ small { font-size: var(--fs-xs); }
     }
     return (EXT[key] = { L, R });
   }
-  const EDGE = 3; // internal px kept free between the companion's art and the screen edge
+  const EDGE = 6; // internal px kept free between the companion's art and the screen edge
 
   const HC = (MF.HDComp = {
     POSE, extent,
@@ -13999,9 +14026,9 @@ small { font-size: var(--fs-xs); }
       (POSE[HC.rigName(cp.key)] || (() => {}))(rig, P, S);
       Q.W = rig.solve(P, Q.W);
       const lift = MF.SpellFX ? MF.SpellFX.lift(sc) : 0, gy = sc.ground;
-      // it keeps its spot behind the wizard, but never past the screen's left edge: when he steps back after a wave
-      // (stride.js) it stops where its whole painted body (wings, tails at full swing) is still on screen
-      const ext = extent(cp.key), k = (H[cp.key] || 30) / 240, cx = Math.max(sc.wx() - BACK, ext && !sc.compFree ? ext.L * k + EDGE : -1e9); // compFree: walks in from off-screen with him (prologue.js)
+      // exactly BACK px behind the wizard at all times (owner: steps back with him, same speed, time and distance); the
+      // pair stands far enough right (sc.formShift, below) that the companion stays whole on screen even stepped back
+      const k = (H[cp.key] || 30) / 240, cx = sc.wx() - BACK * (sc.wizScale || 1); // keeps clear of him as he grows (boss taps)
       const hover = fly && !still ? Math.sin(t * 2.2) * 2.5 + Math.sin(t * 3.7) * 0.8 : 0, hop = cel * 7;
       const bottom = fly ? gy - 16 - lift * 0.6 + hover - hop : gy - hop;
       const place = { x0: cx - 128 * k, y0: bottom - 248 * k, k };
@@ -14024,7 +14051,16 @@ small { font-size: var(--fs-xs); }
       const P = MF.Scene && MF.Scene.prototype; if (!P || P.__hdComp) return;
       P.__hdComp = true;
       const update = P.update;
-      P.update = function (dt) { this.hdComp = !!(this.comp && HC.ready(this.comp.key)); return update.call(this, dt); };
+      P.update = function (dt) {
+        this.hdComp = !!(this.comp && HC.ready(this.comp.key));
+        // formation: how far the wizard (and so his companion) stands right of the old spot so that the companion's
+        // whole painted body (wings and tails at full swing) clears the left edge even when he has stepped back after a
+        // wave. Eased, so changing companion never makes them jump.
+        const ext = this.hdComp ? extent(this.comp.key) : null, k = this.comp ? (H[this.comp.key] || 30) / 240 : 0;
+        const need = ext ? Math.max(0, EDGE + ext.L * k + BACK * (this.wizScale || 1) + (MF.Stride ? MF.Stride.BACK : 26) - WX0) : 0;
+        this.formShift = (this.formShift == null ? need : this.formShift + (need - this.formShift) * (1 - Math.exp(-Math.min(0.1, dt || 0) * 4)));
+        return update.call(this, dt);
+      };
       if (MF.HDFX) {
         const begin = (sc, sx, sy) => { const x = sc.ctx; x.save(); x.setTransform(sc.dev, 0, 0, sc.dev, sx * sc.dev, sy * sc.dev); x.imageSmoothingEnabled = true; return x; };
         const behind = MF.HDFX.behind, front = MF.HDFX.front;
@@ -15410,6 +15446,7 @@ small { font-size: var(--fs-xs); }
   'use strict';
   const MF = (root.MF = root.MF || {});
   const PER = 0.007, CAP = 0.7; // +0.7% a tap, at most +70% (100 taps) per boss fight
+  const SIZE_PER = 0.01, SIZE_CAP = 0.6; // +1% size a tap, at most +60% (60 taps), so he always fits the screen
   const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
   const TAU = Math.PI * 2;
 
@@ -15420,7 +15457,7 @@ small { font-size: var(--fs-xs); }
     /** The wizard's tap box in the scene's CSS pixels. */
     box(sc) {
       const lift = MF.SpellFX ? MF.SpellFX.lift(sc) : 0, wx = sc.wx(), g = sc.ground - lift;
-      const a = sc.toCss(wx - 26, g - 78), b = sc.toCss(wx + 28, g + 6);
+      const z = sc.wizScale || 1, a = sc.toCss(wx - 26 * z, g - 78 * z), b = sc.toCss(wx + 28 * z, g + 6);
       return { x0: a.x, y0: a.y, x1: b.x, y1: b.y };
     },
     tap(sc) {
@@ -15445,6 +15482,10 @@ small { font-size: var(--fs-xs); }
       if (sc.tapFx) { for (const f of sc.tapFx) f.t += dt; sc.tapFx = sc.tapFx.filter((f) => f.t < 0.6); }
       const H = sc.tapHint; if (H) { H.t += dt; if (H.t > 4.5 || (H.done && H.t > 0.4) || !TP.active() && H.t > 0.5) TP.hideHint(sc); }
       const b = TP.battle(); sc.tapBoostShown = b && b.info && b.info.isBoss ? b.tapBoost || 0 : 0;
+      // he grows 1% a tap in a boss fight (owner; looks only), up to SIZE_CAP, easing to each new size; back to normal
+      // when the next stage starts (taps reset)
+      const taps = b && b.info && b.info.isBoss ? b.taps || 0 : 0, want = 1 + Math.min(SIZE_CAP, taps * SIZE_PER);
+      sc.wizScale = (sc.wizScale || 1) + (want - (sc.wizScale || 1)) * (1 - Math.exp(-Math.min(0.1, dt) * 9));
     },
     showHint(sc) {
       let el = document.getElementById('tap-hint');
@@ -15478,7 +15519,7 @@ small { font-size: var(--fs-xs); }
         x.beginPath(); x.ellipse(wx, g - 30, 16 + 14 * ph, (16 + 14 * ph) * 1.25, 0, 0, TAU); x.stroke();
       }
       if (boost > 0) { // the total, over his head
-        const txt = `+${(boost * 100).toFixed(1)}%`, y = g - 66 - (sc.hdWiz ? 16 : 0) - 9; // just above his HP bar
+        const txt = `+${(boost * 100).toFixed(1)}%`, y = g - 66 - (sc.hdWiz ? 16 : 0) - 9 - ((sc.wizScale || 1) - 1) * 78; // just above his HP bar (which rises as he grows)
         x.globalCompositeOperation = 'source-over'; x.globalAlpha = 1; x.font = `10px 'Lilita One', sans-serif`; x.textAlign = 'center'; x.textBaseline = 'middle';
         x.lineWidth = 2.6; x.strokeStyle = '#2a1404'; x.strokeText(txt, wx, y); x.fillStyle = '#ffe08a'; x.fillText(txt, wx, y);
       }
@@ -20961,6 +21002,78 @@ small { font-size: var(--fs-xs); }
 })(typeof window !== 'undefined' ? window : globalThis);
 </script>
 <script>
+/* Arcane Forge: Magefall — the tutorial wizard's "Ah-haa!" (owner, Oct 2026: "a nice realistic sound effect like
+   'AH HAA'" when he first appears). No recording could be fetched here, so it is synthesised as a voice would be made,
+   not as a beep: a glottal-like source built from harmonics of the pitch, each harmonic shaped by the mouth's vowel
+   resonances (formants of an open "ah"), breath noise through the same resonances for the "h", an old man's slight
+   pitch shake, a rising-then-falling triumphant "haa", and a small room echo. MF.AhHaa.render(rate) -> Float32Array
+   (mono). A real recording, if the owner adds one (sfx/tutor_ahhaa.mp3 / .m4a / .wav), replaces it (build.js). */
+(function (root) {
+  'use strict';
+  const MF = (root.MF = root.MF || {});
+  const A = (MF.AhHaa = {});
+  // open-mouthed "ah", a man's vocal tract, slightly darker for an old voice: [freq Hz, bandwidth Hz, gain]
+  const AH = [[720, 110, 1], [1120, 130, 0.62], [2480, 190, 0.28], [3350, 260, 0.12]];
+  const AA = [[760, 120, 1], [1180, 140, 0.6], [2520, 200, 0.26], [3400, 260, 0.1]];
+  const res = (f, F) => { let s = 0; for (const [fc, bw, g] of F) { const r = f / fc; s += g / Math.sqrt((1 - r * r) ** 2 + (f * bw / (fc * fc)) ** 2); } return s; };
+  // a tiny seeded random, so it sounds the same every time
+  const rnd = (seed) => () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+
+  /** Pitch (Hz) and loudness over time for "Ah" ... "haa!". */
+  function contour(t) {
+    if (t < 0.3) { // "Ah": a quick lift
+      const u = t / 0.3; return { f0: 128 + 26 * Math.sin(Math.PI * Math.min(1, u * 1.3)) - 8 * u, a: Math.min(1, t / 0.03) * (1 - Math.max(0, (u - 0.75) / 0.25)) * 0.8, F: AH, br: 0.08 };
+    }
+    if (t < 0.4) return { f0: 118, a: 0, F: AH, br: 0 }; // the breath between
+    const u = (t - 0.4) / 0.62; // "haa!": up to a peak and down, held a little
+    const f0 = 112 + 70 * Math.sin(Math.PI * Math.min(1, u * 1.15)) * (u < 0.87 ? 1 : 0.85) - 22 * u;
+    const a = Math.min(1, (t - 0.4) / 0.06) * (u < 0.7 ? 1 : Math.max(0, 1 - (u - 0.7) / 0.3));
+    return { f0, a, F: AA, br: 0.12 + 0.25 * Math.max(0, 1 - (t - 0.4) / 0.08) };
+  }
+
+  A.render = (rate = 44100) => {
+    const dur = 1.05, n = Math.round(dur * rate), out = new Float32Array(n + Math.round(0.5 * rate));
+    const R = rnd(7), harm = 40, ph = new Float64Array(harm + 1);
+    let jit = 0, shim = 0, c = null, f0 = 0;
+    const amp = new Float64Array(harm + 1); // each harmonic's strength, refreshed every 64 samples (the voice changes slowly)
+    for (let i = 0; i < n; i++) {
+      const t = i / rate;
+      if (i % 64 === 0) {
+        jit += (R() - 0.5) * 0.012; jit *= 0.92; shim += (R() - 0.5) * 0.05; shim *= 0.9; // the old man's unsteadiness
+        c = contour(t); f0 = c.f0 * (1 + 0.018 * Math.sin(2 * Math.PI * 5.6 * t) + jit);
+        for (let h = 1; h <= harm; h++) { const f = h * f0; amp[h] = f > 5200 ? 0 : (res(f, c.F) / Math.pow(h, 0.9)) * c.a * (1 + shim) * 0.06; } // source tilt x mouth resonances
+      }
+      let v = 0;
+      for (let h = 1; h <= harm; h++) { ph[h] += (2 * Math.PI * h * f0) / rate; if (amp[h]) v += Math.sin(ph[h]) * amp[h]; }
+      out[i] = v;
+    }
+    // breath: noise through the vowel's resonances (the "h" of "haa", and a little air in both syllables)
+    const bq = (fc, bw) => { const w = (2 * Math.PI * fc) / rate, q = fc / bw, al = Math.sin(w) / (2 * q); const a0 = 1 + al; return { b0: al / a0, b2: -al / a0, a1: (-2 * Math.cos(w)) / a0, a2: (1 - al) / a0, x1: 0, x2: 0, y1: 0, y2: 0 }; };
+    const F = [bq(760, 160), bq(1180, 200), bq(2500, 300)], G = [1, 0.6, 0.3];
+    for (let i = 0; i < n; i++) {
+      const t = i / rate, c = contour(t);
+      const h = t >= 0.31 && t < 0.47 ? Math.sin(Math.PI * (t - 0.31) / 0.16) * 0.55 : 0; // the "h"
+      const amt = h + c.br * c.a; if (amt <= 0) continue;
+      const x = (R() * 2 - 1) * amt; let y = 0;
+      F.forEach((f, k) => { const o = f.b0 * x + f.b2 * f.x2 - f.a1 * f.y1 - f.a2 * f.y2; f.x2 = f.x1; f.x1 = x; f.y2 = f.y1; f.y1 = o; y += o * G[k]; });
+      out[i] += y * 0.5;
+    }
+    // a small stone room: a few early reflections and a soft tail
+    const dry = out.slice(0, n);
+    for (const [ms, g] of [[23, 0.22], [37, 0.17], [53, 0.12], [79, 0.09], [113, 0.07], [167, 0.05], [241, 0.035]]) {
+      const d = Math.round((ms / 1000) * rate); for (let i = 0; i < n; i++) out[i + d] += dry[i] * g;
+    }
+    // gentle low-pass and normalise to -3 dBFS
+    let lp = 0, peak = 0; for (let i = 0; i < out.length; i++) { lp += (out[i] - lp) * 0.55; out[i] = lp; peak = Math.max(peak, Math.abs(lp)); }
+    const k = peak ? 0.7 / peak : 1; for (let i = 0; i < out.length; i++) out[i] *= k;
+    // fade the very end
+    const f = Math.round(0.08 * rate); for (let i = 0; i < f; i++) out[out.length - 1 - i] *= i / f;
+    return out;
+  };
+  if (typeof module !== 'undefined') module.exports = A;
+})(typeof window !== 'undefined' ? window : globalThis);
+</script>
+<script>
 /* Arcane Forge: Magefall — the first-visit tutorial, told by an old wizard (owner, Oct 2026: "this wizard pops up in a
    satisfying way ... a speech bubble appears ... old man wizard sound effects"; short texts, "people cannot be asked
    to read all that"). Replaces MF.ui.tutorial (Pip the frog's card); same steps, same spotlight, same gift summon.
@@ -20969,7 +21082,8 @@ small { font-size: var(--fs-xs); }
    - His speech bubble pops out after him and the text types itself; he bobs while he talks.
    - He stands in the half of the screen away from what is being shown; when he has to cross over he vanishes in a
      puff of sparkles and reappears on the other side.
-   - Silent (owner, Oct 2026: "no voice and no sound for the wizard"), no confetti: only the wizard and his bubble.
+   - No voice lines, no other sounds and no confetti (owner, Oct 2026): only the wizard and his bubble, and one
+     "Ah-haa!" when he first springs up (T.ah; sfx/ahhaa.js, or a real recording).
    - The spotlight is a steady gold frame that glides between targets; it no longer pulses a full-screen shadow or
      animates the dimming (that flashed the screen yellow on phones). */
 (function (root) {
@@ -21000,7 +21114,35 @@ small { font-size: var(--fs-xs); }
 
   /* ------------------------------------------------------------------ the tour */
 
+  /* ------------------------------------------------------------------ his entrance: "Ah-haa!" (owner) */
+  // The one sound the tutorial makes: when he first springs up. A real recording (sfx/tutor_ahhaa.*, build.js ->
+  // MF.HD_ART.tutor_sfx) is used if there is one, else the voice made by sfx/ahhaa.js. Phones only allow sound after
+  // a tap: if his entrance comes first, the "Ah-haa!" plays on the first tap while he is still on his first line.
+  let actx = null, abuf = null, pendingAh = false;
+  const soundOn = () => !MF.app || !MF.app.settings || MF.app.settings.sound !== false;
+  function prepareAh() {
+    const AC = root.AudioContext || root.webkitAudioContext; if (!AC || !soundOn()) return;
+    try { actx = actx || new AC(); } catch (e) { return; }
+    if (abuf) return;
+    const rec = MF.HD_ART && MF.HD_ART.tutor_sfx;
+    if (rec) {
+      fetch(rec).then((r) => r.arrayBuffer()).then((ab) => new Promise((ok, no) => actx.decodeAudioData(ab, ok, no))).then((b) => { abuf = b; }).catch(() => { if (!abuf && MF.AhHaa) synth(); });
+    } else if (MF.AhHaa) synth();
+  }
+  function synth() { const d = MF.AhHaa.render(actx.sampleRate); abuf = actx.createBuffer(1, d.length, actx.sampleRate); abuf.getChannelData(0).set(d); }
+  function playAh() {
+    if (!actx || !abuf || !soundOn()) return false;
+    if (actx.state !== 'running') { try { actx.resume(); } catch (e) { /* needs a tap */ } }
+    if (actx.state !== 'running') return false;
+    const src = actx.createBufferSource(), g = actx.createGain(); g.gain.value = 0.9;
+    src.buffer = abuf; src.connect(g); g.connect(actx.destination); src.start(actx.currentTime + 0.02);
+    return true;
+  }
+  T.ah = () => { pendingAh = !playAh(); };
+  if (typeof document !== 'undefined') document.addEventListener('pointerup', () => { if (pendingAh && document.querySelector('.tw')) { pendingAh = false; setTimeout(playAh, 30); } }, { capture: true, passive: true });
+
   T.start = () => {
+    prepareAh(); // before the screen changes: making the voice takes a moment
     const UI = MF.ui, game = MF.app && MF.app.game, app = document.getElementById('app');
     if (!UI || !game || !app || app.querySelector('.tw')) return;
     const STEPS = T.STEPS;
@@ -21067,6 +21209,7 @@ small { font-size: var(--fs-xs); }
     const appear = (first) => {
       wiz.classList.remove('gone', 'enter'); void wiz.offsetWidth; wiz.classList.add('enter');
       burst(first ? 24 : 16);
+      if (first) later(() => T.ah(), 200); // "Ah-haa!" as he lands
     };
     const type = (txt) => {
       const p = el.querySelector('#tut-text');
@@ -21194,7 +21337,7 @@ small { font-size: var(--fs-xs); }
    wizard walks a while across empty land, then the dragons pull up and the screen says "OH NO… DRAGONS!", and only
    then does the first fight begin. Runs once per save (s.prologueDone), right after the tutorial.
    - hold(): while the old wizard explains the game the field stays quiet (no enemies, the battle clock stopped).
-   - start(): the scene fades out and back in with the wizard (and his companion) just off the left edge; he walks in
+   - start(): the scene fades out and back in with the wizard (his companion always walks right behind him) just off the left edge; he walks in
      at a steady pace, his steps driven by the distance he covers (stride.js), until he is a few steps from his spot.
      There the first stage is set up as usual: the dragons stride in from the right while stride.js walks him the last
      steps, the arena dims for the "OH NO… DRAGONS!" entrance (UI.bossIntro) with a sting and a rumble, and then the battle clock starts. */
@@ -21215,7 +21358,7 @@ small { font-size: var(--fs-xs); }
     clearField(sc);
   };
   function clearField(sc) { sc.dragons.clear(); sc.boss = null; sc.telegraph = null; const bb = document.getElementById('boss-banner'); if (bb) bb.hidden = true; }
-  P.release = () => { P.holding = false; P.active = false; const sc = MF.debugScene; if (sc) { sc.compFree = false; sc.noBars = false; } if (P.veil) { P.veil.remove(); P.veil = null; } };
+  P.release = () => { P.holding = false; P.active = false; const sc = MF.debugScene; if (sc) sc.noBars = false; if (P.veil) { P.veil.remove(); P.veil = null; } };
 
   P.start = () => {
     const g = game(), sc = MF.debugScene;
@@ -21241,7 +21384,7 @@ small { font-size: var(--fs-xs); }
       P.from = -(base + 96); P.to = -(MF.Stride ? MF.Stride.BACK : 26);
       P.dist = P.to - P.from;
       P.v = P.dist / Math.max(MIN_T, Math.min(MAX_T, P.dist / SPEED));
-      sc.stride = null; sc.compFree = true; sc.wizOff = P.from; sc.noBars = true; // no health bar while he walks in
+      sc.stride = null; sc.wizOff = P.from; sc.noBars = true; // no health bar while he walks in
       if (P.veil) P.veil.style.opacity = '0';
       P.phase = 'walk'; P.t = 0;
     }
@@ -21261,7 +21404,7 @@ small { font-size: var(--fs-xs); }
   function arrive(sc) {
     const g = game();
     if (P.veil) { P.veil.remove(); P.veil = null; }
-    sc.compFree = false; sc.noBars = false;
+    sc.noBars = false;
     const ev = [];
     MF.battle.startStage(g.battle, g.s, ev);
     MF.app.dispatch(ev); // the dragons stride in; stride.js walks him his last steps
