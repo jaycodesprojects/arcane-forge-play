@@ -10333,7 +10333,6 @@ small { font-size: var(--fs-xs); }
   // gliding down to a soft landing. Galaxy Ascension still rises clearly above it.
   const GALAXY_H = 58, HOVER_H = 40, HOVER_UP = 0.85, HOVER_HOLD = 2.85, HOVER_DOWN = 0.9, HOVER_EVERY = 8.2;
   const HOVER_FOR = HOVER_UP + HOVER_HOLD + HOVER_DOWN;
-  const SPIN_AT = HOVER_UP - 0.05, SPIN_FOR = 0.7; // the somersault at the top of the rise
 
   const FX = (MF.SpellFX = {
     // palettes in the renderer's SPELL_PAL shape, for the staff charge and the impact sparks
@@ -10414,20 +10413,6 @@ small { font-size: var(--fs-xs); }
       const sm = (k) => (k <= 0 ? 0 : k >= 1 ? 1 : k * k * (3 - 2 * k));
       const up = ease(L.t / 0.3), down = sm((L.dur - L.t) / 0.5); // a soft half-second landing
       return Math.min(up, down) * GALAXY_H + (sc.reduced ? 0 : Math.sin(L.t * 5) * 1.2 * Math.min(up, down));
-    },
-    /** The mid-air somersault (owner: "a quick 360 up in the air before the attacks", "super smooth and fluid"): as he
-        reaches the top of each idle hover he turns one full backward circle in 0.7 s, easing in and out (angle in
-        radians, 0 the rest of the time; none in reduced motion, while walking or in the Welcome back scene). */
-    spin(sc) {
-      if (sc.reduced || sc.noHover) return 0;
-      const T = sc.hoverT || 0, p = T % HOVER_EVERY, u = (p - SPIN_AT) / SPIN_FOR, cyc = Math.floor(T / HOVER_EVERY);
-      if (u <= 0 || u >= 1) return 0;
-      // decided once, as the turn begins (only if he is really up); a turn that has begun always finishes smoothly,
-      // even if a new wave starts during it (no snap back to upright)
-      if (sc.spinCyc !== cyc) { sc.spinCyc = cyc; sc.spinOn = FX.hoverK(sc) > 0.5; }
-      if (!sc.spinOn) return 0;
-      const e = u * u * u * (u * (u * 6 - 15) + 10); // smootherstep: starts and ends at rest
-      return -Math.PI * 2 * e;
     },
     /** The idle hover's height (internal px) for hover strength k: the rise floats up with a gentle 6% overshoot that
         settles, and aloft he drifts on two slow, unequal waves (a believable bob, never a fixed rhythm). */
@@ -13460,12 +13445,7 @@ small { font-size: var(--fs-xs); }
     /** Where the wizard's open palm is right now (internal px): spells leave from here. */
     palm(sc) {
       const S = sc.hdWizState, r = H.wizRig();
-      if (S && S.W && S.place) {
-        const q = r.point(S.W, 'palm'), px = S.place.x0 + S.place.k * q.x, py = S.place.y0 + S.place.k * q.y, sp = S.spin;
-        if (!sp) return { x: px, y: py };
-        const c = Math.cos(sp.a), s = Math.sin(sp.a), dx = px - sp.cx, dy = py - sp.cy; // spells leave the turning hand
-        return { x: sp.cx + dx * c - dy * s, y: sp.cy + dx * s + dy * c };
-      }
+      if (S && S.W && S.place) { const q = r.point(S.W, 'palm'); return { x: S.place.x0 + S.place.k * q.x, y: S.place.y0 + S.place.k * q.y }; }
       const lift = MF.SpellFX ? MF.SpellFX.lift(sc) : 0, k = WIZ_H / 420;
       return { x: sc.wx() + (347 - 210) * k, y: sc.ground - lift - (420 - 179) * k };
     },
@@ -13482,10 +13462,6 @@ small { font-size: var(--fs-xs); }
       shadow(x, wx + 1, sc.ground, 14 * sz * (1 - 0.4 * S.lv - 0.25 * (S.hv || 0)), 1 * (1 - 0.55 * S.lv - 0.45 * (S.hv || 0)));
       airFX(sc, x, S, wx, feet, t, dt >= 1 ? 0 : dt);
       const hat = H.gearTier(sc, 'hat'), tier = hat >= 0 ? hat : clamp(sc.wizTier | 0, 0, 9), red = sc.reduced; // the hat's rarity crowns the head
-      // the mid-air somersault (spells-extra.js SpellFX.spin): the whole figure turns about his middle
-      const ang = MF.SpellFX && MF.SpellFX.spin ? MF.SpellFX.spin(sc) : 0;
-      S.spin = ang ? { a: ang, cx: wx, cy: feet - 230 * k } : null;
-      if (S.spin) { x.save(); x.translate(S.spin.cx, S.spin.cy); x.rotate(ang); x.translate(-S.spin.cx, -S.spin.cy); }
       headFX(x, rig, S, tier, t, red, 'back');
       H.gearFX(sc, x, rig, S, t, red, 'back');
       x.globalCompositeOperation = 'source-over'; x.globalAlpha = 1;
@@ -13493,7 +13469,6 @@ small { font-size: var(--fs-xs); }
       MF.Rig.draw(x, rig, S.key, S.W, S.place, sc.dev, { flash: S.flash });
       headFX(x, rig, S, tier, t, red, 'front');
       H.gearFX(sc, x, rig, S, t, red, 'front');
-      if (S.spin) x.restore();
       const w = sc.wizard;
       if (w && w.name === 'cast') { // magic gathering in the palm as it thrusts
         const pp = H.palm(sc), e = Math.sin(progress(w, MF.ATLAS.wizard.anims) * Math.PI);
