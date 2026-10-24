@@ -18158,9 +18158,10 @@ small { font-size: var(--fs-xs); }
       el.innerHTML = `<h3>Shop <small>Gems ${U.fmt(s.gems)}</small></h3><div class="tab-scroll" style="display:flex;flex-direction:column;gap:8px">
         <div class="row"><i class="ico2" style="background-image:url(${MF.assets.url(MF.ATLAS.ui.chest)})"></i><span class="grow"><b>Free gift</b><span>+${fc.essence} potions · +${fc.gems} gems · every 4h</span></span><button class="btn sm ${ready ? 'green' : 'off'}" id="a-free" type="button">${ready ? 'Claim' : U.fmtTime(left)}</button></div>
         <div class="row"><i class="ico2" style="background-image:url(${MF.assets.url(MF.ATLAS.ui.essence)})"></i><span class="grow"><b>Potion crate</b><span>+${p.essence} potions</span></span><button class="btn sm ${s.gems >= p.gems ? 'gold' : 'off'}" id="a-buy" type="button">${p.gems} gems</button></div>
-        <p class="note">Gems come from first-time boss kills and the free gift. No real money in this build.</p></div>`;
+        <p class="note">Gems also come from first-time boss kills and the free gift.</p>${MF.IAP ? MF.IAP.html(s) : ''}</div>`;
       el.querySelector('#a-free').addEventListener('click', () => { const r = G.claimFreeChest(game); if (r) { MF.ui.toast(`+${r.essence} potions, +${r.gems} gems`); MF.ui.refresh(); S.renderTab('shop'); } });
       el.querySelector('#a-buy').addEventListener('click', () => { if (G.buyEssence(game)) { MF.ui.toast(`+${p.essence} potions`); MF.ui.refresh(); S.renderTab('shop'); } else MF.ui.toast('Not enough gems'); });
+      if (MF.IAP) MF.IAP.bind(el);
     }
   };
 })(typeof window !== 'undefined' ? window : globalThis);
@@ -20968,14 +20969,20 @@ small { font-size: var(--fs-xs); }
    - His speech bubble pops out after him and the text types itself; he bobs while he talks.
    - He stands in the half of the screen away from what is being shown; when he has to cross over he vanishes in a
      puff of sparkles and reappears on the other side.
-   - Sound (Settings > Sound turns it off): he speaks each line in the device's own voice, deep and slow (V.say); a
-     magical whoosh and bells when he appears and a soft chime on Next (Web Audio, no files). */
+   - Silent (owner, Oct 2026: "no voice and no sound for the wizard"), no confetti: only the wizard and his bubble.
+   - The spotlight is a steady gold frame that glides between targets; it no longer pulses a full-screen shadow or
+     animates the dimming (that flashed the screen yellow on phones). */
 (function (root) {
   'use strict';
   const MF = (root.MF = root.MF || {});
   const T = (MF.Tutor = {});
   const reduce = () => !!(root.matchMedia && root.matchMedia('(prefers-reduced-motion: reduce)').matches);
   const ASPECT = 840 / 532; // art height / width
+  // the spotlight: always the same three shadows (ring, soft glow, dimming), so nothing is interpolated between
+  // different shadow lists (that flashed the whole screen yellow)
+  const DIM = '0 0 0 9999px rgba(12, 8, 24, 0.74)';
+  const RING = `0 0 0 2px #f5c542, 0 0 12px 3px rgba(245, 197, 66, 0.45), ${DIM}`;
+  const NO_RING = `0 0 0 2px rgba(245, 197, 66, 0), 0 0 12px 3px rgba(245, 197, 66, 0), ${DIM}`;
   const ORB = [0.77, 0.22], FACE = [0.42, 0.12]; // fractions of the art (tools/tutor-art.py)
 
   T.STEPS = [
@@ -20990,80 +20997,6 @@ small { font-size: var(--fs-xs); }
     { sel: '[data-tab="inventory"]', title: 'A gift!', text: 'Here are 50 tokens. Summon your first companion!', action: 'summon', btn: 'Summon!' },
     { sel: null, title: 'You’re ready!', text: 'Go show those dragons who’s boss. Ho ho!' },
   ];
-
-  /* ------------------------------------------------------------------ voice */
-
-  const V = (T.voice = {});
-  let ctx = null, out = null, noiseBuf = null;
-  const soundOn = () => !MF.app || !MF.app.settings || MF.app.settings.sound !== false;
-  function ac() {
-    if (!soundOn()) return null;
-    if (!ctx) {
-      const AC = root.AudioContext || root.webkitAudioContext; if (!AC) return null;
-      ctx = new AC();
-      const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 3400;
-      out = ctx.createGain(); out.gain.value = 0.32;
-      // a small room: short feedback echo, so the voice sounds like it fills the tower
-      const dl = ctx.createDelay(); dl.delayTime.value = 0.085; const fb = ctx.createGain(); fb.gain.value = 0.22; const wet = ctx.createGain(); wet.gain.value = 0.25;
-      out.connect(lp); lp.connect(ctx.destination); lp.connect(dl); dl.connect(fb); fb.connect(dl); dl.connect(wet); wet.connect(ctx.destination);
-      noiseBuf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
-      const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
-    }
-    if (ctx.state !== 'running') { try { ctx.resume(); } catch (e) { /* needs a tap first */ } }
-    return ctx;
-  }
-  /* His voice (owner: the synthesised mumbling sounded "like muffled robotic noises"): the device's own speech voice
-     reads each line, slower and deeper than normal, preferring a British male voice (Arthur / Daniel on iPhone and Mac,
-     Google UK English Male in Chrome, George / Ryan on Windows). Phones only allow speech after a tap: a line that
-     could not start is spoken on the next tap. */
-  const synth = root.speechSynthesis;
-  const VOICES = [/^Arthur/i, /^Daniel/i, /^Oliver/i, /Google UK English Male/i, /George/i, /Ryan/i, /^Gordon/i, /^Thomas/i, /^Aaron/i, /David/i, /^Alex$/i];
-  let voice = null, pending = null, spoken = 0;
-  const pickVoice = () => {
-    if (!synth) return null;
-    const vs = synth.getVoices() || []; if (!vs.length) return null;
-    for (const re of VOICES) { const v = vs.find((x) => re.test(x.name) && /^en/i.test(x.lang)); if (v) return v; }
-    return vs.find((x) => /^en-GB/i.test(x.lang)) || vs.find((x) => /^en/i.test(x.lang)) || null;
-  };
-  if (synth) { voice = pickVoice(); try { synth.addEventListener('voiceschanged', () => { voice = pickVoice(); }); } catch (e) { /* old browsers */ } }
-  /** Speaks a line in his voice; done() when he finishes (or straight away when there is no speech). */
-  V.say = (text, done) => {
-    const fin = () => { if (done) { const d = done; done = null; d(); } };
-    if (!synth || !soundOn() || typeof SpeechSynthesisUtterance === 'undefined') { setTimeout(fin, 900); return; }
-    try { synth.cancel(); } catch (e) { /* nothing playing */ }
-    const u = new SpeechSynthesisUtterance(String(text).replace(/[’‘]/g, "'").replace(/…/g, '...'));
-    voice = voice || pickVoice();
-    if (voice) { u.voice = voice; u.lang = voice.lang; } else u.lang = 'en-GB';
-    u.pitch = 0.62; u.rate = 0.86; u.volume = 1; // an old man: deep and unhurried
-    const id = ++spoken;
-    pending = { text, done: fin, id };
-    u.onstart = () => { if (pending && pending.id === id) pending = null; };
-    u.onend = u.onerror = () => { if (spoken === id) fin(); };
-    setTimeout(() => { if (pending && pending.id === id) fin(); }, 700); // blocked until a tap: don't wait for it
-    try { synth.speak(u); } catch (e) { fin(); }
-  };
-  V.stop = () => { pending = null; spoken++; try { if (synth) synth.cancel(); } catch (e) { /* ignore */ } };
-  if (typeof document !== 'undefined') document.addEventListener('pointerup', () => { if (pending) { const p = pending; pending = null; V.say(p.text); } }, { capture: true, passive: true });
-  /** The magical pop: a soft whoosh and a rising sparkle of bell notes. */
-  V.pop = () => {
-    if (!ac()) return;
-    const c = ctx, t = c.currentTime + 0.01;
-    const nz = c.createBufferSource(); nz.buffer = noiseBuf; const bp = c.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = 1.4;
-    bp.frequency.setValueAtTime(380, t); bp.frequency.exponentialRampToValueAtTime(3200, t + 0.35);
-    const g = c.createGain(); g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.18, t + 0.1); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.42);
-    nz.connect(bp); bp.connect(g); g.connect(out); nz.start(t); nz.stop(t + 0.45);
-    [784, 988, 1175, 1568, 1976].forEach((f, i) => bell(t + 0.08 + i * 0.055, f, 0.5, 0.07));
-  };
-  function bell(t, f, d, amp) {
-    const c = ctx, o = c.createOscillator(), o2 = c.createOscillator(), g = c.createGain();
-    o.type = 'sine'; o.frequency.value = f; o2.type = 'sine'; o2.frequency.value = f * 2.76;
-    const g2 = c.createGain(); g2.gain.value = 0.25;
-    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(amp, t + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t + d);
-    o.connect(g); o2.connect(g2); g2.connect(g); g.connect(out);
-    o.start(t); o2.start(t); o.stop(t + d + 0.05); o2.stop(t + d + 0.05);
-  }
-  /** Next: a soft two-note chime. */
-  V.chime = () => { if (!ac()) return; const t = ctx.currentTime + 0.01; bell(t, 1175, 0.35, 0.06); bell(t + 0.07, 1568, 0.45, 0.05); };
 
   /* ------------------------------------------------------------------ the tour */
 
@@ -21112,12 +21045,12 @@ small { font-size: var(--fs-xs); }
         const r = t.getBoundingClientRect(), pad = 6, m = 4; // the gold frame stays whole inside the screen (owner)
         const L = Math.max(m, r.left - B.left - pad), Tp = Math.max(m, r.top - B.top - pad);
         const R = Math.min(B.width - m, r.right - B.left + pad), Bt = Math.min(B.height - m, r.bottom - B.top + pad);
-        Object.assign(mask.style, { left: `${L}px`, top: `${Tp}px`, width: `${R - L}px`, height: `${Bt - Tp}px`, borderRadius: '10px', boxShadow: '' });
+        Object.assign(mask.style, { left: `${L}px`, top: `${Tp}px`, width: `${R - L}px`, height: `${Bt - Tp}px`, borderRadius: '10px', boxShadow: RING });
         targetTop = Tp;
         return r.top - B.top + r.height / 2 < B.height / 2 ? 'bottom' : 'top';
       }
       // nothing to show: only the dimming (the gold ring round a zero-size spot was a yellow dot mid-screen, owner)
-      Object.assign(mask.style, { left: `${B.width / 2}px`, top: `${B.height * 0.42}px`, width: '0px', height: '0px', borderRadius: '50%', boxShadow: '0 0 0 9999px rgba(12, 8, 24, 0.74)' });
+      Object.assign(mask.style, { left: `${B.width / 2}px`, top: `${B.height * 0.42}px`, width: '0px', height: '0px', borderRadius: '50%', boxShadow: NO_RING });
       return 'bottom';
     };
     /** Sizes the wizard for this screen and puts the group in the chosen half. */
@@ -21134,16 +21067,14 @@ small { font-size: var(--fs-xs); }
     const appear = (first) => {
       wiz.classList.remove('gone', 'enter'); void wiz.offsetWidth; wiz.classList.add('enter');
       burst(first ? 24 : 16);
-      T.voice.pop();
     };
     const type = (txt) => {
       const p = el.querySelector('#tut-text');
       clearInterval(typing);
       wiz.classList.add('talk');
-      T.voice.say(txt, () => wiz.classList.remove('talk')); // he bobs for as long as he speaks
-      if (reduce()) { p.textContent = txt; return; }
+      if (reduce()) { p.textContent = txt; wiz.classList.remove('talk'); return; }
       let n = 0; p.textContent = '';
-      typing = setInterval(() => { n += 2; p.textContent = txt.slice(0, n); if (n >= txt.length) clearInterval(typing); }, 26);
+      typing = setInterval(() => { n += 2; p.textContent = txt.slice(0, n); if (n >= txt.length) { clearInterval(typing); wiz.classList.remove('talk'); } }, 26); // he bobs while the line appears
     };
     const say = () => {
       const st = STEPS[i];
@@ -21153,7 +21084,6 @@ small { font-size: var(--fs-xs); }
       el.querySelector('#tut-skip').hidden = i === STEPS.length - 1;
       bub.classList.remove('pop'); void bub.offsetWidth; bub.classList.add('pop');
       type(st.text);
-      if (i === STEPS.length - 1) confetti();
     };
     const show = (first) => {
       timers.forEach(clearTimeout); timers = [];
@@ -21170,22 +21100,9 @@ small { font-size: var(--fs-xs); }
       side = where; // decided now, so a quick second tap can't leave him half way
       later(() => { layout(where); appear(false); later(() => { bub.classList.remove('hide'); say(); }, 420); }, reduce() ? 0 : 230);
     };
-    const confetti = () => {
-      if (reduce()) return;
-      const cols = ['#f5c542', '#9c4dff', '#5fe08a', '#5fd8ee', '#ff6b8a', '#ffffff'];
-      for (let k = 0; k < 60; k++) {
-        const c = document.createElement('i');
-        c.className = 'tut-conf';
-        c.style.left = `${50 + (Math.random() - 0.5) * 20}%`;
-        c.style.background = cols[k % cols.length];
-        c.style.animation = 'none';
-        el.appendChild(c);
-        fly(c, [{ opacity: 1, transform: 'translate(0,0) rotate(0)' }, { opacity: 1, offset: 0.6 }, { opacity: 0, transform: `translate(${(Math.random() - 0.5) * 340}px,${-160 - Math.random() * 260}px) rotate(${Math.random() * 720 - 360}deg)` }], 1800, Math.random() * 150);
-      }
-    };
     const onResize = () => { const w = spot(); layout(w); side = w; };
     const finish = () => {
-      clearInterval(typing); timers.forEach(clearTimeout); T.voice.stop();
+      clearInterval(typing); timers.forEach(clearTimeout);
       game.s.tutDone = true; MF.app.save();
       if (MF.Prologue) setTimeout(() => MF.Prologue.start(), 380); // then his walk to the first battle
       if (UI.tab !== 'loadout') UI.setTab('loadout');
@@ -21209,7 +21126,7 @@ small { font-size: var(--fs-xs); }
         return;
       }
       if (i >= STEPS.length - 1) { finish(); return; }
-      T.voice.chime(); i++; show(false);
+      i++; show(false);
     });
     el.querySelector('#tut-skip').addEventListener('click', (e) => { e.stopPropagation(); finish(); });
     bub.addEventListener('click', () => { clearInterval(typing); wiz.classList.remove('talk'); el.querySelector('#tut-text').textContent = STEPS[i].text; });
@@ -21221,6 +21138,7 @@ small { font-size: var(--fs-xs); }
   /* ------------------------------------------------------------------ look */
 
   const CSS = `
+.tw .tut-mask{animation:none!important;transition:left .42s cubic-bezier(.25,.8,.25,1),top .42s cubic-bezier(.25,.8,.25,1),width .42s cubic-bezier(.25,.8,.25,1),height .42s cubic-bezier(.25,.8,.25,1),border-radius .42s ease!important;will-change:left,top,width,height}
 .tw .tw-stage{position:absolute;left:8px;right:8px;display:flex;align-items:flex-end;gap:0;pointer-events:none;z-index:2}
 .tw .tw-stage.bottom{bottom:calc(var(--nav-h,64px) * 0 + 8px + env(safe-area-inset-bottom,0px))}
 .tw .tw-stage.top{top:calc(8px + env(safe-area-inset-top,0px));align-items:flex-start;justify-content:center}
@@ -21279,8 +21197,7 @@ small { font-size: var(--fs-xs); }
    - start(): the scene fades out and back in with the wizard (and his companion) just off the left edge; he walks in
      at a steady pace, his steps driven by the distance he covers (stride.js), until he is a few steps from his spot.
      There the first stage is set up as usual: the dragons stride in from the right while stride.js walks him the last
-     steps, the arena dims for the "OH NO… DRAGONS!" entrance (UI.bossIntro) with a sting, a rumble and the mentor's
-     voice, and then the battle clock starts. */
+     steps, the arena dims for the "OH NO… DRAGONS!" entrance (UI.bossIntro) with a sting and a rumble, and then the battle clock starts. */
 (function (root) {
   'use strict';
   const MF = (root.MF = root.MF || {});
@@ -21355,7 +21272,6 @@ small { font-size: var(--fs-xs); }
     if (MF.ui && MF.ui.bossIntro) MF.ui.bossIntro('DRAGONS!', 'Ready your staff, apprentice!', 'OH NO…', 'pl-alarm');
     if (sc.doShake) sc.doShake(1.2, 0.45);
     sting();
-    if (MF.Tutor && MF.Tutor.voice && MF.Tutor.voice.say) setTimeout(() => MF.Tutor.voice.say('Oh no... dragons! Ready your staff!'), 450);
   }
 
   /** A dramatic sting: a deep boom, a swelling minor brass chord and a cymbal rush (Web Audio, Settings > Sound). */
@@ -21398,6 +21314,160 @@ small { font-size: var(--fs-xs); }
     }
   };
   P.install();
+})(typeof window !== 'undefined' ? window : globalThis);
+</script>
+<script>
+/* Arcane Forge: Magefall — in-app purchases, PROTOTYPE (owner, Oct 2026). A gem store in the Shop: a one-time
+   Starter Pack and six gem packs, with prices, bonus gems and badges. Buying shows a confirm sheet, then grants the
+   pack with a small celebration. NO REAL PAYMENT HAPPENS: every screen says so, and nothing leaves the device.
+   Going live means a real payment provider (App Store / Google Play billing for store apps, or a web checkout such
+   as Stripe) and a server that confirms each purchase before the gems are granted; PACKS and grant() are the parts
+   that stay. Purchases are recorded in the save (s.iap). */
+(function (root) {
+  'use strict';
+  const MF = (root.MF = root.MF || {});
+  const IAP = (MF.IAP = {});
+  const fmt = (v) => Number(v).toLocaleString('en-GB'); // full amounts in the store: 1,200 not 1.2k
+
+  IAP.CURRENCY = '£'; // placeholder prices for the prototype
+  IAP.STARTER = { id: 'starter', name: 'Starter Pack', price: 2.99, gems: 500, essence: 300, tokens: 100, once: true,
+    desc: 'A one-time boost for new wizards' };
+  IAP.PACKS = [
+    { id: 'g1', name: 'Pouch of Gems', price: 0.99, gems: 80, bonus: 0, size: 1 },
+    { id: 'g2', name: 'Sack of Gems', price: 4.99, gems: 500, bonus: 50, size: 2 },
+    { id: 'g3', name: 'Chest of Gems', price: 9.99, gems: 1200, bonus: 200, size: 3, badge: 'Popular' },
+    { id: 'g4', name: 'Vault of Gems', price: 19.99, gems: 2600, bonus: 600, size: 4 },
+    { id: 'g5', name: 'Dragon’s Hoard', price: 49.99, gems: 7000, bonus: 2000, size: 5 },
+    { id: 'g6', name: 'Archmage’s Treasury', price: 99.99, gems: 15000, bonus: 5000, size: 6, badge: 'Best value' },
+  ];
+  const all = () => [IAP.STARTER, ...IAP.PACKS];
+  const byId = (id) => all().find((p) => p.id === id);
+  const price = (p) => `${IAP.CURRENCY}${p.price.toFixed(2)}`;
+  const st = (s) => (s.iap = s.iap || { bought: [], starter: false });
+  const url = (k) => (MF.UIPolish && MF.UIPolish.url(k)) || '';
+
+  /** Gives the pack's contents (the only place a purchase changes the save). */
+  IAP.grant = (s, p) => {
+    const r = st(s);
+    s.gems += p.gems + (p.bonus || 0);
+    if (p.essence) s.essence += p.essence;
+    if (p.tokens && MF.comp) { s.companions = s.companions || { owned: {}, equipped: null, unseen: 0, tokens: 0 }; s.companions.tokens = (s.companions.tokens || 0) + p.tokens; }
+    if (p.once) r.starter = true;
+    r.bought.push({ id: p.id, t: Date.now(), prototype: true });
+    if (r.bought.length > 200) r.bought.splice(0, r.bought.length - 200);
+  };
+
+  /** A pile of gems that grows with the pack. */
+  const pile = (n) => {
+    const spots = [[50, 56, 1], [30, 64, 0.82], [70, 64, 0.82], [40, 40, 0.74], [62, 40, 0.74], [50, 26, 0.66]].slice(0, n);
+    return `<span class="iap-pile">${spots.map(([x, y, k], i) => `<i style="left:${x}%;top:${y}%;--k:${k};z-index:${10 - i};background-image:url(${url('gem')})"></i>`).join('')}</span>`;
+  };
+
+  /** The store's markup, placed in the Shop tab. */
+  IAP.html = (s) => {
+    const r = st(s);
+    const S = IAP.STARTER;
+    const starter = r.starter ? '' : `
+      <div class="iap-starter">
+        <span class="iap-ribbon">One time only</span>
+        <span class="iap-sicons"><i style="background-image:url(${url('gem')})"></i><i style="background-image:url(${url('essence')})"></i><i class="cp" style="background-image:url(${url('chest')})"></i></span>
+        <span class="iap-sinfo"><b>${S.name}</b><span>${S.desc}</span>
+          <span class="iap-gets"><em><i style="background-image:url(${url('gem')})"></i>${fmt(S.gems)}</em><em><i style="background-image:url(${url('essence')})"></i>${fmt(S.essence)}</em><em>${S.tokens} companion tokens</em></span></span>
+        <button class="btn gold iap-buy" type="button" data-iap="${S.id}">${price(S)}</button>
+      </div>`;
+    const packs = IAP.PACKS.map((p) => `
+      <button class="iap-pack" type="button" data-iap="${p.id}">
+        ${p.badge ? `<span class="iap-badge">${p.badge}</span>` : ''}
+        ${pile(p.size)}
+        <b class="iap-amt">${fmt(p.gems)}</b>
+        ${p.bonus ? `<span class="iap-bonus">+${fmt(p.bonus)} bonus</span>` : '<span class="iap-bonus none">&nbsp;</span>'}
+        <span class="iap-name">${p.name}</span>
+        <span class="iap-price">${price(p)}</span>
+      </button>`).join('');
+    return `<div class="iap">
+      <div class="iap-head"><b>Gem Store</b><span class="iap-proto">Prototype · no real money</span></div>
+      ${starter}
+      <div class="iap-grid">${packs}</div>
+      <p class="iap-note">Prototype store: buying here is free and only for testing. Real payments come later through the App Store, Google Play or a secure web checkout.</p>
+    </div>`;
+  };
+
+  /** Hooks the store's buttons up after the Shop renders. */
+  IAP.bind = (el) => { for (const b of el.querySelectorAll('[data-iap]')) b.addEventListener('click', () => IAP.confirm(b.dataset.iap)); };
+
+  /** Confirm sheet, then the grant and a short celebration. */
+  IAP.confirm = (id) => {
+    const p = byId(id), g = MF.app && MF.app.game; if (!p || !g) return;
+    if (p.once && st(g.s).starter) { MF.ui.toast('You already have the Starter Pack'); return; }
+    const total = p.gems + (p.bonus || 0);
+    const gets = [`<em><i style="background-image:url(${url('gem')})"></i>${fmt(total)} gems</em>`];
+    if (p.essence) gets.push(`<em><i style="background-image:url(${url('essence')})"></i>${fmt(p.essence)} potions</em>`);
+    if (p.tokens) gets.push(`<em>${p.tokens} companion tokens</em>`);
+    const el = MF.sheets.open(`${MF.sheets.head('CONFIRM PURCHASE', 'Prototype store')}
+      <div class="iap-conf">${pile(p.size || 3)}<b>${p.name}</b><span class="iap-cgets">${gets.join('')}</span>
+        <span class="iap-cprice">${price(p)}</span>
+        <p class="iap-warn">Prototype: no money is charged. The items are added so you can test the store.</p></div>
+      <div class="actions"><button class="btn" type="button" data-close="1">Cancel</button><button class="btn green" type="button" id="iap-yes"><b>Buy (prototype)</b></button></div>`,
+    { center: true, round: true, cls: 'iap-sheet' });
+    el.querySelector('[data-close]').addEventListener('click', MF.sheets.close);
+    el.querySelector('#iap-yes').addEventListener('click', () => {
+      IAP.grant(g.s, p);
+      MF.app.save();
+      MF.ui.refresh();
+      if (MF.sfx && MF.sfx.chest) MF.sfx.chest(4, 200);
+      const done = MF.sheets.open(`<div class="iap-done">${pile(p.size || 3)}<b>Purchase complete!</b><span class="iap-cgets">${gets.join('')}</span><span class="iap-proto">Prototype · nothing was charged</span></div>
+        <div class="actions"><button class="btn green" type="button" data-close="1"><b>Great!</b></button></div>`, { center: true, round: true, cls: 'iap-sheet' });
+      done.querySelector('.actions [data-close]').addEventListener('click', MF.sheets.close);
+      if (MF.sheets.renderTab) MF.sheets.renderTab('shop');
+    });
+  };
+
+  const CSS = `
+.iap{display:flex;flex-direction:column;gap:8px;margin-top:4px}
+.iap-head{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-top:6px}
+.iap-head b{font-family:'Cinzel',var(--font-title);font-weight:900;font-size:20px;color:var(--txt);letter-spacing:0.01em}
+.iap-proto{padding:2px 9px;border-radius:999px;font-size:var(--fs-xs);font-weight:700;color:#7a2a1a;background:#ffe2c8;border:1.5px solid #c9703a}
+.iap-starter{position:relative;display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:16px 12px 12px;border:2px solid #c9952e;border-radius:12px;color:#fff;
+  background:radial-gradient(circle at 15% 40%,#6a3ab8 0,#3a1f74 55%,#24154a 100%);box-shadow:inset 0 0 0 1px rgba(255,224,138,0.35),0 3px 8px rgba(42,26,58,0.35)}
+.iap-ribbon{position:absolute;top:-10px;left:12px;padding:2px 10px;border-radius:999px;font-size:var(--fs-xs);font-weight:800;color:#2a1a3a;background:linear-gradient(#ffe08a,#e9b84a);box-shadow:0 0 0 1.5px #2a1a3a}
+.iap-sicons{position:relative;flex:none;width:64px;height:56px}
+.iap-sicons i{position:absolute;width:36px;height:36px;background-size:contain;background-repeat:no-repeat;filter:drop-shadow(0 2px 3px rgba(0,0,0,0.5))}
+.iap-sicons i:nth-child(1){left:0;top:0}.iap-sicons i:nth-child(2){left:26px;top:4px}.iap-sicons i:nth-child(3){left:12px;top:20px}
+.iap-sinfo{flex:1 1 150px;min-width:0;display:flex;flex-direction:column;gap:3px}
+.iap-sinfo b{font-family:'Cinzel',var(--font-title);font-weight:900;font-size:18px;color:#ffe08a;text-shadow:0 2px 0 rgba(0,0,0,0.45)}
+.iap-sinfo > span{font-size:var(--fs-xs);color:#e2d6ff}
+.iap-gets,.iap-cgets{display:flex;flex-wrap:wrap;gap:4px 10px}
+.iap-gets em,.iap-cgets em{display:inline-flex;align-items:center;gap:3px;font-style:normal;font-weight:800;font-size:var(--fs-s)}
+.iap-gets em i,.iap-cgets em i{width:16px;height:16px;background-size:contain;background-repeat:no-repeat}
+.iap-starter .iap-buy{margin-left:auto;min-width:84px;height:40px}
+.iap-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:8px}
+.iap-pack{position:relative;display:flex;flex-direction:column;align-items:center;gap:1px;padding:10px 6px 8px;border:2px solid var(--ink);border-radius:12px;color:var(--txt);text-align:center;
+  background:radial-gradient(circle at 50% 30%,#e9f6ff 0,var(--paper) 62%);box-shadow:var(--hl),0 2px 0 rgba(42,26,58,0.25);cursor:pointer;transition:transform .12s ease}
+.iap-pack:active{transform:translateY(2px) scale(.98)}
+.iap-badge{position:absolute;top:-9px;left:50%;transform:translateX(-50%);white-space:nowrap;padding:1px 8px;border-radius:999px;font-size:10px;font-weight:800;color:#fff;background:linear-gradient(#ff7a5a,#d23a3a);box-shadow:0 0 0 1.5px #2a1a3a}
+.iap-pile{position:relative;display:block;width:64px;height:52px}
+.iap-pile i{position:absolute;width:calc(34px * var(--k));height:calc(34px * var(--k));transform:translate(-50%,-50%);background-size:contain;background-repeat:no-repeat;filter:drop-shadow(0 2px 2px rgba(0,0,0,0.35))}
+.iap-amt{font-family:var(--font-title);font-size:22px;font-weight:400;line-height:1.05;color:#2349a8}
+.iap-bonus{font-size:10px;font-weight:800;color:#1f7a4a}
+.iap-name{font-size:var(--fs-xs);font-weight:700;line-height:1.2;color:#5e5040}
+.iap-price{margin-top:5px;align-self:stretch;padding:5px 0;border-radius:8px;font-weight:800;color:#1e1430;background:linear-gradient(#8ff0b0,#4cc87a);box-shadow:inset 0 -2px 0 rgba(0,0,0,0.18),0 0 0 1.5px #2a1a3a}
+.iap-note{margin:2px 0 0;font-size:var(--fs-xs);line-height:1.35;color:var(--muted-d,#6a5a4a)}
+.iap-conf,.iap-done{display:flex;flex-direction:column;align-items:center;gap:6px;text-align:center;margin:6px 0 10px}
+.iap-conf .iap-pile,.iap-done .iap-pile{width:96px;height:78px}
+.iap-conf .iap-pile i,.iap-done .iap-pile i{width:calc(50px * var(--k));height:calc(50px * var(--k))}
+.iap-conf b,.iap-done b{font-family:'Cinzel',var(--font-title);font-weight:900;font-size:20px;color:var(--txt)}
+.iap-cprice{font-family:var(--font-title);font-size:26px;color:#2a1a3a}
+.iap-warn{margin:0;padding:6px 10px;border-radius:8px;font-size:var(--fs-xs);font-weight:700;color:#7a2a1a;background:#ffe2c8;border:1px dashed #c9703a}
+.iap-done .iap-pile{animation:iapPop .6s cubic-bezier(.34,1.56,.64,1) both}
+.iap-done .iap-pile i{animation:iapGlow 1.6s ease-in-out .6s infinite}
+@keyframes iapPop{0%{transform:scale(.3);opacity:0}100%{transform:none;opacity:1}}
+@keyframes iapGlow{50%{filter:drop-shadow(0 0 8px rgba(120,200,255,0.9))}}
+@media (prefers-reduced-motion: reduce){.iap-done .iap-pile,.iap-done .iap-pile i{animation:none}}`;
+  IAP.install = () => {
+    if (typeof document === 'undefined' || document.getElementById('iap-css')) return;
+    const s = document.createElement('style'); s.id = 'iap-css'; s.textContent = CSS; document.head.appendChild(s);
+  };
+  IAP.install();
 })(typeof window !== 'undefined' ? window : globalThis);
 </script>
 <script>
